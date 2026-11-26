@@ -17,6 +17,14 @@ name: iOS
 #
 # The native ios/ platform is NOT committed (like android/) — this
 # workflow generates it on the runner with `npx cap add ios`, then syncs.
+#
+# NOTE: Capacitor 8 uses Swift Package Manager, NOT the old
+# pod-based setup. There is no Podfile and no workspace file —
+# `cap add ios` generates ios/App/App.xcodeproj (a directory) plus
+# ios/App/CapApp-SPM/Package.swift for plugins. So xcodebuild must
+# use `-project ios/App/App.xcodeproj`, never `-workspace` (that
+# fails with exit 66), and there is no pod-install step (it fails
+# with "No Podfile found").
 on:
   push:
     branches: [main]
@@ -48,75 +56,43 @@ jobs:
 
       - name: List generated iOS platform
         # Shows in the log what `npx cap add ios` / `cap sync` actually
-        # produced, so a missing App.xcworkspace is visible here, not
+        # produced, so a missing App.xcodeproj is visible here, not
         # later as a cryptic xcodebuild exit 66.
         run: ls -la ios/App/
 
-      - name: Install CocoaPods dependencies
-        # Capacitor's iOS project uses CocoaPods: App.xcworkspace is only
-        # created by `pod install`. Without it xcodebuild fails with
-        # "error: 'ios/App/App.xcworkspace' does not exist" (exit 66).
-        # If pod install fails, continue — the build steps below fall
-        # back to the plain .xcodeproj if a workspace was not produced.
+      - name: Verify App.xcodeproj exists
+        # Fail fast with a clear message if the project is missing,
+        # instead of a bare xcodebuild exit 66. Note: App.xcodeproj is
+        # a DIRECTORY, so test with -d, not -f.
         run: |
-          cd ios/App
-          pod install --repo-update || pod install || echo "pod install failed — continuing; build will fall back to App.xcodeproj if no workspace was produced"
-          ls -la
-
-      - name: Verify App.xcworkspace exists
-        # Fail fast with a clear message if neither the workspace nor the
-        # plain project exists, instead of a bare xcodebuild exit 66.
-        run: |
-          test -f ios/App/App.xcworkspace || (echo "WARNING: ios/App/App.xcworkspace missing after pod install — checking for .xcodeproj fallback"; ls -R ios/App)
-          if [ ! -f ios/App/App.xcworkspace ] && [ ! -f ios/App/App.xcodeproj ]; then echo "ERROR: ios/App/App.xcworkspace missing after pod install and no App.xcodeproj either"; ls -R ios/App; exit 1; fi
-          ls -la ios/App/App.xcworkspace || ls -la ios/App/App.xcodeproj
+          test -d ios/App/App.xcodeproj || (echo "ERROR: ios/App/App.xcodeproj missing"; ls -R ios/App; exit 1)
 
       - name: List available simulators
         run: xcrun simctl list devices available
 
       - name: Build for iOS Simulator
         # Simulator build needs no signing and proves the app compiles.
-        # Uses the workspace when pod install produced it, otherwise
-        # falls back to the plain .xcodeproj.
+        # Capacitor 8 uses Swift Package Manager, so build the plain
+        # .xcodeproj — there is no workspace file / Podfile.
         run: |
-          if [ -f ios/App/App.xcworkspace ]; then
-            xcodebuild -workspace ios/App/App.xcworkspace \
-              -scheme App \
-              -configuration Debug \
-              -sdk iphonesimulator \
-              -destination 'generic/platform=iOS Simulator' \
-              -derivedDataPath derived-data \
-              CODE_SIGNING_ALLOWED=NO
-          else
-            xcodebuild -project ios/App/App.xcodeproj \
-              -scheme App \
-              -configuration Debug \
-              -sdk iphonesimulator \
-              -destination 'generic/platform=iOS Simulator' \
-              -derivedDataPath derived-data \
-              CODE_SIGNING_ALLOWED=NO
-          fi
+          xcodebuild -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath derived-data \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Build for generic iOS device (unsigned)
         # Device build, also unsigned — for inspection / re-signing in Xcode.
         run: |
-          if [ -f ios/App/App.xcworkspace ]; then
-            xcodebuild -workspace ios/App/App.xcworkspace \
-              -scheme App \
-              -configuration Debug \
-              -sdk iphoneos \
-              -destination 'generic/platform=iOS' \
-              -derivedDataPath derived-data \
-              CODE_SIGNING_ALLOWED=NO
-          else
-            xcodebuild -project ios/App/App.xcodeproj \
-              -scheme App \
-              -configuration Debug \
-              -sdk iphoneos \
-              -destination 'generic/platform=iOS' \
-              -derivedDataPath derived-data \
-              CODE_SIGNING_ALLOWED=NO
-          fi
+          xcodebuild -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath derived-data \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Collect the built .app files
         run: |
