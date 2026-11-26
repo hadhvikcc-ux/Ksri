@@ -15,7 +15,10 @@
       <div class="logo">K</div>
       <h1>Ksri</h1>
       <p class="tagline">Chat, call &amp; share — with your phone <b>or</b> your email.</p>
+      <div id="mode-badge" class="mode-badge demo">Demo mode — no backend, chats are simulated</div>
     </div>
+    <!-- Invisible reCAPTCHA for real phone SMS sign-in (Firebase). -->
+    <div id="recaptcha-container"></div>
 
     <!-- Step 1: choose method -->
     <div id="step-method" class="auth-card">
@@ -28,25 +31,33 @@
       <label id="id-label" for="id-input">Phone number</label>
       <input id="id-input" type="tel" placeholder="+91 98765 43210" autocomplete="off">
       <p id="id-error" class="error hidden"></p>
-      <div class="demo-otp demo-otp-big">Demo OTP for this build: <b class="demo-otp-code" id="demo-otp-signup">123456</b><br><span class="tiny">Use this code — no SMS is sent. It is the same code every time.</span></div>
-      <button class="btn-primary" onclick="sendOtp()">Send OTP →</button>
-      <button class="btn-outline" onclick="continueDemoAccount()">Continue with demo account →</button>
-      <button class="btn-link" onclick="skipOtp()">Skip OTP (demo)</button>
-      <p class="tiny muted">Demo build: no SMS/email is actually sent. Your OTP is <b>123456</b> and is shown on this screen and the next screen.</p>
+      <div id="email-auth-row" class="hidden">
+        <label for="email-password">Password (email sign-in)</label>
+        <input id="email-password" type="password" placeholder="At least 6 characters" autocomplete="off">
+        <p class="tiny muted">Email has no SMS code — sign in with a link sent to your inbox, or with a password.</p>
+        <button class="btn-primary" onclick="sendEmailLinkFlow()">✉️ Email me a sign-in link</button>
+        <button class="btn-outline" onclick="signInEmailPasswordFlow()">Sign in / Create account with password</button>
+      </div>
+      <div class="demo-otp demo-otp-big demo-only">Demo OTP for this build: <b class="demo-otp-code" id="demo-otp-signup">123456</b><br><span class="tiny">Use this code — no SMS is sent. It is the same code every time.</span></div>
+      <button class="btn-primary" id="send-otp-btn" onclick="sendOtp()">Send OTP →</button>
+      <button class="btn-outline demo-only" onclick="continueDemoAccount()">Continue with demo account →</button>
+      <button class="btn-link demo-only" onclick="skipOtp()">Skip OTP (demo)</button>
+      <p class="tiny muted demo-only">Demo build: no SMS/email is actually sent. Your OTP is <b>123456</b> and is shown on this screen and the next screen.</p>
+      <p class="tiny muted real-only hidden">Real mode: a real SMS code will be sent to your phone. For email, use the sign-in link or password above — Firebase does not send codes by email.</p>
     </div>
 
     <!-- Step 2: OTP -->
     <div id="step-otp" class="auth-card hidden">
       <h2>Enter the 6-digit code</h2>
       <p class="muted">We sent a code to <b id="otp-target"></b></p>
-      <div class="demo-otp demo-otp-big">Demo OTP: <b class="demo-otp-code" id="demo-otp">123456</b> <span class="tiny">(shown because there is no backend yet — always 123456)</span></div>
+      <div class="demo-otp demo-otp-big demo-only">Demo OTP: <b class="demo-otp-code" id="demo-otp">123456</b> <span class="tiny">(shown because there is no backend yet — always 123456)</span></div>
       <p id="otp-note" class="info-note hidden"></p>
       <input id="otp-input" type="text" inputmode="numeric" maxlength="6" placeholder="• • • • • •" autocomplete="off" oninput="otpTyped()">
       <p id="otp-error" class="error hidden"></p>
-      <button class="btn-outline" onclick="fillDemoOtp()">Use demo code 123456</button>
+      <button class="btn-outline demo-only" onclick="fillDemoOtp()">Use demo code 123456</button>
       <button class="btn-primary" onclick="verifyOtp()">Verify &amp; continue</button>
-      <button class="btn-link" onclick="resendOtp()">Resend code</button>
-      <button class="btn-link" onclick="continueDemoAccount()">Skip OTP (demo) →</button>
+      <button class="btn-link demo-only" onclick="resendOtp()">Resend code</button>
+      <button class="btn-link demo-only" onclick="continueDemoAccount()">Skip OTP (demo) →</button>
       <button class="btn-link" onclick="backToMethod()">← Change number / email</button>
     </div>
 
@@ -186,6 +197,7 @@
       </div>
       <div class="settings-group" id="settings-list"></div>
       <button class="btn-danger-outline" onclick="logout()">Log out / Switch account</button>
+      <div id="settings-mode-badge" class="mode-badge demo" style="margin-top:12px">Demo mode — no backend, chats are simulated</div>
       <p class="tiny muted center">Ksri v1.0.0 · Offline-first demo · Data stays on your device (localStorage)</p>
     </main>
 
@@ -247,6 +259,8 @@
   <div id="status-viewer" class="status-viewer hidden"></div>
   <div id="toast" class="toast hidden"></div>
 </div>
+<script src="firebase-config.js"></script>
+<script src="firebase.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

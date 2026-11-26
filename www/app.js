@@ -1,5 +1,11 @@
-/* Ksri — offline-first WhatsApp-style messenger.
-   All state lives in localStorage under key ksri_v1. No server, no network. */
+/* Ksri — WhatsApp-style messenger.
+   DEMO MODE (default): offline-first, all state in localStorage under key
+   ksri_v1. No server, no network; demo OTP 123456, simulated contacts.
+   REAL MODE (when www/firebase-config.js has real Firebase values):
+   real sign-in (SMS code / email link / email+password) and real chats
+   over Cloud Firestore via www/firebase.js (window.KsriFirebase).
+   Demo mode is never broken by real mode — if Firebase is not
+   configured or cannot be reached, the app behaves exactly as before. */
 'use strict';
 
 var KEY = 'ksri_v1';
@@ -163,6 +169,21 @@ var mediaRecorder = null, voiceChunks = [], voiceTimer = null, voiceStart = 0;
 var callTimerInt = null, callSeconds = 0;
 var longPressTimer = null;
 
+/* ---------- REAL MODE (Firebase) globals ---------- */
+/* firebaseReady: true once www/firebase.js has initialised with a REAL
+   config (false in demo mode, and false if the CDN is unreachable).
+   realMode: true only when signed in with Firebase — demo chats are
+   hidden and real Firestore chats take over. Demo mode is the fallback
+   whenever either flag is false. */
+var firebaseReady = false;
+var realMode = false;
+var realOtpPending = false;
+var realUserCache = {};   /* uid -> Firestore user profile */
+var realChatsUnsub = null;
+var realMsgsUnsub = null;
+var realMsgsChatId = null;
+var realTypingSent = false;
+
 /* ---------- persistence helpers ---------- */
 function getChat(id) { return state.chats.find(function (c) { return c.id === id; }); }
 function lastMsg(chat) { var ms = chat.messages.filter(function (m) { return !m.deleted; }); return ms[ms.length - 1]; }
@@ -178,6 +199,7 @@ function setMethod(m) {
   inp.type = m === 'phone' ? 'tel' : 'email';
   inp.placeholder = m === 'phone' ? '+91 98765 43210' : 'you@example.com';
   inp.value = '';
+  refreshAuthModeUI();
 }
 function showStep(id) {
   ['step-method', 'step-otp', 'step-profile'].forEach(function (s) { $(s).classList.toggle('hidden', s !== id); });
@@ -231,13 +253,35 @@ function sendOtp() {
   $('otp-target').textContent = pendingValue;
   var d = $('demo-otp'); if (d) d.textContent = DEMO_OTP;
   $('otp-input').value = '';
+  /* REAL MODE: send a REAL SMS code instead of using the demo code.
+     The request is async — the screen advances immediately and the note
+     below is updated when Firebase answers. A failure never blocks the
+     screen; the real error text is shown in the note. */
+  if (firebaseReady && pendingMethod === 'phone' && window.KsriFirebase) {
+    realOtpPending = true;
+    note = 'Sending a real SMS code to ' + pendingValue + '…';
+    window.KsriFirebase.sendPhoneCode(pendingValue).then(function () {
+      var n2 = $('otp-note');
+      if (n2) { n2.textContent = 'Real SMS code sent to ' + pendingValue + '. Enter the 6-digit code from the SMS.'; n2.classList.remove('hidden'); }
+      toast('SMS code sent — check your phone');
+    }).catch(function (err) {
+      realOtpPending = false;
+      var n2 = $('otp-note');
+      if (n2) { n2.textContent = 'Could not send the SMS: ' + window.KsriFirebase.friendlyAuthError(err) + ' The demo code 123456 does NOT work in real mode.'; n2.classList.remove('hidden'); }
+      toast('SMS failed — see the note above');
+    });
+  }
   var onote = $('otp-note');
   if (onote) {
-    onote.textContent = (note ? note + ' ' : '') + 'Demo OTP is 123456 — tap "Use demo code 123456" below. No SMS is sent.';
+    if (firebaseReady && pendingMethod === 'phone') {
+      onote.textContent = note || ('Real SMS code sent to ' + pendingValue + '. Enter the 6-digit code from the SMS.');
+    } else {
+      onote.textContent = (note ? note + ' ' : '') + 'Demo OTP is 123456 — tap "Use demo code 123456" below. No SMS is sent.';
+    }
     onote.classList.remove('hidden');
   }
   showStep('step-otp');
-  toast('Demo OTP is 123456');
+  toast((firebaseReady && pendingMethod === 'phone') ? 'Sending SMS code…' : 'Demo OTP is 123456');
 }
 function resendOtp() {
   /* Fixed code: resending does not change it. */
@@ -273,6 +317,28 @@ function skipOtp() { continueDemoAccount(); }
 function verifyOtp() {
   var v = ($('otp-input').value || '').trim().replace(/\D/g, '');
   var err = $('otp-error');
+  /* REAL MODE: verify the REAL SMS code with Firebase. The demo code
+     NEVER works here — if no SMS was requested, refuse outright instead
+     of falling through to the demo check below. */
+  if (firebaseReady && pendingMethod === 'phone' && window.KsriFirebase) {
+    if (!window.KsriFirebase.hasPendingPhoneCode()) {
+      if (err) { err.textContent = 'No SMS code was requested — tap "Send OTP" first. If sending failed, see the note above.'; err.classList.remove('hidden'); }
+      return;
+    }
+    if (v.length !== 6) {
+      if (err) { err.textContent = 'Enter the 6-digit code from the SMS.'; err.classList.remove('hidden'); }
+      return;
+    }
+    window.KsriFirebase.confirmPhoneCode(v).then(function () {
+      realOtpPending = false;
+      if (err) err.classList.add('hidden');
+      showStep('step-profile');
+      $('profile-name').focus();
+    }).catch(function (e) {
+      if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+    });
+    return;
+  }
   /* Accept the fixed demo code and whatever code is currently shown —
      they are the same by construction, so the shown code can never fail. */
   if (v === DEMO_OTP || v === String(pendingOtp).replace(/\D/g, '')) {
@@ -301,23 +367,46 @@ function finishRegistration() {
   if (!name) { err.textContent = 'Please enter a display name.'; err.classList.remove('hidden'); return; }
   err.classList.add('hidden');
   state.user = { name: name, bio: bio, color: AVATAR_COLORS[avatarColorIdx], method: pendingMethod, value: pendingValue, joinedAt: Date.now() };
+  /* REAL MODE: save the profile to Firestore so other real users can
+     find this person by phone/email, and chats can show their name. */
+  if (firebaseReady && window.KsriFirebase && window.KsriFirebase.user) {
+    state.user.uid = window.KsriFirebase.user.uid;
+    window.KsriFirebase.upsertUserProfile({
+      displayName: name, bio: bio, avatarColor: AVATAR_COLORS[avatarColorIdx],
+      phone: pendingMethod === 'phone' ? pendingValue : '',
+      email: pendingMethod === 'email' ? pendingValue : ''
+    });
+  }
   save();
   enterApp();
   toast('Welcome to Ksri, ' + name + '! 🎉');
 }
 function logout() {
   if (!confirm('Log out? Your chats stay on this device, but you will need to sign in again.')) return;
+  /* REAL MODE: sign out of Firebase and stop live listeners. */
+  if (firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.signOut();
+    stopRealChats();
+    stopRealMessages();
+    realMode = false;
+  }
   state.user = null;
   save();
   $('app-screen').classList.add('hidden');
   $('chat-screen').classList.add('hidden');
   $('auth-screen').classList.remove('hidden');
   showStep('step-method');
+  updateModeBadge();
 }
 function enterApp() {
   $('auth-screen').classList.add('hidden');
   $('chat-screen').classList.add('hidden');
   $('app-screen').classList.remove('hidden');
+  /* REAL MODE: subscribe to the user's real Firestore chats. */
+  if (firebaseReady && window.KsriFirebase && window.KsriFirebase.user) {
+    realMode = true;
+    startRealChats();
+  }
   applyTheme(); applyFontSize();
   renderAll();
 }
@@ -356,6 +445,9 @@ function chatMatches(chat, q) {
 function renderChats() {
   var q = ($('global-search-input') ? $('global-search-input').value.trim() : '');
   var list = state.chats.filter(function (c) { return !c.archived; });
+  /* REAL MODE: seeded demo contacts are not real people — hide them and
+     show only real Firestore chats (plus the local Ksri AI / Notes chats). */
+  if (realMode) list = list.filter(function (c) { return c.real || c.isAI || c.isNotes; });
   if (state.folder === 'unread') list = list.filter(function (c) { return c.unread > 0; });
   if (state.folder === 'personal') list = list.filter(function (c) { return c.folder === 'personal'; });
   if (state.folder === 'work') list = list.filter(function (c) { return c.folder === 'work'; });
@@ -384,6 +476,7 @@ function renderChats() {
     '<p class="muted center" style="padding:30px 16px">No chats here yet.<br>Tap ＋ to start a new chat.</p>';
 
   var arch = state.chats.filter(function (c) { return c.archived; });
+  if (realMode) arch = arch.filter(function (c) { return c.real || c.isAI || c.isNotes; });
   $('archived-row').textContent = arch.length ? ('📦 Archived (' + arch.length + ')' + (state.showArchived ? ' ▾' : ' ▸')) : '';
   $('archived-list').classList.toggle('hidden', !state.showArchived);
   $('archived-list').innerHTML = arch.map(chatRow).join('');
@@ -434,6 +527,12 @@ function openChat(id) {
   currentChatId = id;
   chat.unread = 0;
   save();
+  /* REAL MODE: mark the other person's messages read, and subscribe to
+     this chat's messages live. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.markChatRead(id);
+    startRealMessages(id);
+  }
   $('app-screen').classList.add('hidden');
   $('chat-screen').classList.remove('hidden');
   $('chat-avatar').textContent = initials(chat.name);
@@ -456,6 +555,7 @@ function updateChatStatus(chat) {
   $('chat-status').textContent = chat.online ? 'online' : 'last seen ' + nowTime(Date.now() - 3600000);
 }
 function closeChat() {
+  stopRealMessages();
   currentChatId = null;
   $('chat-screen').classList.add('hidden');
   $('app-screen').classList.remove('hidden');
@@ -468,9 +568,10 @@ function renderMessages() {
   if (!chat) return;
   var q = ($('in-chat-search-input') ? $('in-chat-search-input').value.trim().toLowerCase() : '');
   var box = $('messages');
-  var html = '<div class="day-chip">🔒 Messages are end-to-end encrypted (demo) · ' + todayLabel(Date.now()) + '</div>';
+  var html = '<div class="day-chip">🔒 Messages are end-to-end encrypted' + ((firebaseReady && realMode) ? '' : ' (demo)') + ' · ' + todayLabel(Date.now()) + '</div>';
   var shown = 0;
   chat.messages.forEach(function (m) {
+    if (m._hiddenForMe) return; /* deleted for me in a real chat */
     if (q && (m.text || '').toLowerCase().indexOf(q) === -1) return;
     shown++;
     html += messageHtml(chat, m);
@@ -531,6 +632,11 @@ function votePoll(mid, idx) {
     if (m.poll.voted !== null) m.poll.options[m.poll.voted].votes = Math.max(0, m.poll.options[m.poll.voted].votes - 1);
     m.poll.options[idx].votes++; m.poll.voted = idx;
   }
+  /* REAL MODE: poll votes are shared — write the counts to Firestore.
+     (Your own vote highlight is local; counts are what sync.) */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.updateMessageFields(chat.id, mid, { poll: m.poll }).catch(function () { /* best effort */ });
+  }
   save(); renderMessages();
 }
 function onMsgTap(mid, ev) {
@@ -549,6 +655,15 @@ function onTypingInput() {
   var v = $('msg-input').value.trim();
   $('send-btn').style.display = v ? 'block' : 'none';
   $('mic-btn').style.display = v ? 'none' : 'block';
+  /* REAL MODE: broadcast a typing indicator (only when it changes, so we
+     do not write to Firestore on every keystroke). */
+  if (firebaseReady && realMode && currentChatId) {
+    var c = getChat(currentChatId);
+    if (c && c.real && realTypingSent !== !!v) {
+      realTypingSent = !!v;
+      window.KsriFirebase.setTyping(currentChatId, !!v);
+    }
+  }
 }
 
 /* ---------- SEND + SIMULATED REPLIES ---------- */
@@ -567,6 +682,19 @@ function sendMessage() {
   var input = $('msg-input');
   var text = input.value.trim();
   if (!text) return;
+  /* REAL MODE: send to Firestore — the live listener echoes it back, and
+     the other phone receives it. No simulated reply in real chats. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    var extra = {};
+    if (replyToId) extra.replyTo = replyToId;
+    input.value = ''; replyToId = null; $('reply-preview').classList.add('hidden');
+    onTypingInput();
+    realTypingSent = false;
+    window.KsriFirebase.sendChatMessage(chat.id, text, extra).catch(function (e) {
+      toast('Could not send: ' + (e && e.message ? e.message : e));
+    });
+    return;
+  }
   var m = msg('me', text, 0, { ticks: 1, replyTo: replyToId || undefined });
   pushMessage(chat, m);
   input.value = ''; replyToId = null; $('reply-preview').classList.add('hidden');
@@ -613,6 +741,17 @@ function attachPhoto(ev) {
   var file = ev.target.files[0]; if (!file) return;
   var reader = new FileReader();
   reader.onload = function () {
+    /* REAL MODE: photos go into the Firestore message (size limit ~1 MB
+       per document — larger photos are refused with a clear message). */
+    if (chat.real && firebaseReady && window.KsriFirebase) {
+      if (String(reader.result).length > 700000) { toast('Photo too large for a real chat message (Firestore limit ~1 MB). Try a smaller photo.'); return; }
+      window.KsriFirebase.sendChatMessage(chat.id, '📷 Photo', { type: 'image', dataUrl: reader.result }).catch(function (e) {
+        toast('Could not send photo: ' + (e && e.message ? e.message : e));
+      });
+      save(); renderChats();
+      toast('Photo sent');
+      return;
+    }
     pushMessage(chat, msg('me', '📷 Photo', 0, { type: 'image', dataUrl: reader.result, ticks: 1 }));
     save(); renderMessages(); renderChats();
     toast('Photo sent');
@@ -641,7 +780,18 @@ function stopVoiceNote(ev) {
     var blob = new Blob(voiceChunks, { type: 'audio/webm' });
     var reader = new FileReader();
     reader.onload = function () {
-      if (chat) { pushMessage(chat, msg('me', '🎙️ Voice message (' + Math.round((Date.now() - voiceStart) / 1000) + 's)', 0, { type: 'voice', dataUrl: reader.result, ticks: 1 })); save(); renderMessages(); renderChats(); }
+      if (chat) {
+        /* REAL MODE: voice note as a Firestore message (same ~1 MB guard). */
+        if (chat.real && firebaseReady && window.KsriFirebase) {
+          if (String(reader.result).length > 700000) { toast('Voice note too long for a real chat message. Keep it short.'); return; }
+          window.KsriFirebase.sendChatMessage(chat.id, '🎙️ Voice message (' + Math.round((Date.now() - voiceStart) / 1000) + 's)', { type: 'voice', dataUrl: reader.result }).catch(function (e) {
+            toast('Could not send voice note: ' + (e && e.message ? e.message : e));
+          });
+          save(); renderChats();
+          return;
+        }
+        pushMessage(chat, msg('me', '🎙️ Voice message (' + Math.round((Date.now() - voiceStart) / 1000) + 's)', 0, { type: 'voice', dataUrl: reader.result, ticks: 1 })); save(); renderMessages(); renderChats();
+      }
     };
     reader.readAsDataURL(blob);
     mediaRecorder.stream.getTracks().forEach(function (t) { t.stop(); });
@@ -682,6 +832,10 @@ function reactToMessage(mid, emoji) {
   var m = chat.messages.find(function (x) { return x.id === mid; }); if (!m) return;
   m.reactions = m.reactions || {};
   if (m.reactions[emoji]) delete m.reactions[emoji]; else m.reactions[emoji] = true;
+  /* REAL MODE: reactions sync to the other phone. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.reactToMessage(chat.id, mid, emoji, !!m.reactions[emoji]).catch(function () { /* best effort */ });
+  }
   save(); closeModal(); renderMessages();
 }
 function setReply(mid) {
@@ -760,6 +914,15 @@ function doForward(mid, targetId) {
   var chat = getChat(currentChatId); if (!chat) return;
   var m = chat.messages.find(function (x) { return x.id === mid; }); if (!m) return;
   var target = getChat(targetId); if (!target) return;
+  /* REAL MODE: forward into a real chat via Firestore. */
+  if (target.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.sendChatMessage(target.id, '↪ Forwarded: ' + (m.text || ''), {}).catch(function (e) {
+      toast('Could not forward: ' + (e && e.message ? e.message : e));
+    });
+    save(); closeModal(); toast('Forwarded to ' + target.name);
+    renderChats();
+    return;
+  }
   var copy = JSON.parse(JSON.stringify(m));
   copy.id = uid(); copy.from = 'me'; copy.time = Date.now(); copy.ticks = 1; copy.text = '↪ Forwarded: ' + (copy.text || '');
   target.messages.push(copy);
@@ -782,11 +945,27 @@ function saveEdit(mid) {
   var v = $('edit-input').value.trim();
   if (!v) return;
   m.text = v; m.edited = true;
+  /* REAL MODE: the edit syncs to the other phone. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.editMessage(chat.id, mid, v).catch(function () { /* best effort */ });
+  }
   save(); closeModal(); renderMessages();
 }
 function deleteMessage(mid, forEveryone) {
   var chat = getChat(currentChatId); if (!chat) return;
   var m = chat.messages.find(function (x) { return x.id === mid; }); if (!m) return;
+  /* REAL MODE: delete-for-everyone / delete-for-me sync via Firestore. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    if (forEveryone && m.from === 'me') {
+      window.KsriFirebase.deleteMessageForEveryone(chat.id, mid).catch(function () { /* best effort */ });
+      m.deleted = true; m.text = '';
+    } else {
+      window.KsriFirebase.deleteMessageForMe(chat.id, mid).catch(function () { /* best effort */ });
+      chat.messages = chat.messages.filter(function (x) { return x.id !== mid; });
+    }
+    save(); closeModal(); renderMessages(); renderChats();
+    return;
+  }
   if (forEveryone && m.from === 'me') { m.deleted = true; m.text = ''; }
   else { chat.messages = chat.messages.filter(function (x) { return x.id !== mid; }); }
   save(); closeModal(); renderMessages(); renderChats();
@@ -839,7 +1018,11 @@ function checkScheduled() {
   if (!due.length) return;
   due.forEach(function (s) {
     var chat = getChat(s.chatId);
-    if (chat) { pushMessage(chat, msg('me', s.text, 0, { ticks: 2 })); }
+    if (chat) {
+      /* REAL MODE: scheduled message goes to Firestore. */
+      if (chat.real && firebaseReady && window.KsriFirebase) { window.KsriFirebase.sendChatMessage(chat.id, s.text, {}).catch(function () { /* best effort */ }); }
+      else { pushMessage(chat, msg('me', s.text, 0, { ticks: 2 })); }
+    }
   });
   state.scheduled = state.scheduled.filter(function (s) { return s.at > now; });
   save();
@@ -863,6 +1046,14 @@ function savePoll() {
   var q = $('poll-q').value.trim();
   var opts = Array.prototype.slice.call(document.querySelectorAll('.poll-opt-input')).map(function (i) { return i.value.trim(); }).filter(Boolean);
   if (!q || opts.length < 2) { toast('Add a question and at least 2 options'); return; }
+  /* REAL MODE: poll goes to Firestore so everyone in the chat can vote. */
+  if (chat.real && firebaseReady && window.KsriFirebase) {
+    window.KsriFirebase.sendChatMessage(chat.id, '', { type: 'poll', poll: { question: q, options: opts.map(function (o) { return { text: o, votes: 0 }; }), voted: null } }).catch(function (e) {
+      toast('Could not post poll: ' + (e && e.message ? e.message : e));
+    });
+    save(); closeModal(); renderChats();
+    return;
+  }
   pushMessage(chat, msg('me', '', 0, { type: 'poll', poll: { question: q, options: opts.map(function (o) { return { text: o, votes: 0 }; }), voted: null }, ticks: 1 }));
   save(); closeModal(); renderMessages(); renderChats();
 }
@@ -1004,6 +1195,8 @@ function closeInChatSearch() { $('in-chat-search').classList.add('hidden'); $('i
 
 /* ---------- NEW CHAT / GROUP / BROADCAST ---------- */
 function openNewChat() {
+  /* REAL MODE: find a real person by phone/email instead of the demo list. */
+  if (firebaseReady && realMode) { openRealNewChat(); return; }
   var existing = ['Amma ❤️', 'Rahul Sharma', 'Priya Nair', 'Arjun Mehta', 'Sneha Reddy', 'Vikram', 'Divya', 'Kiran'];
   var html = '<h3>New chat</h3>' +
     existing.map(function (n) {
@@ -1025,6 +1218,23 @@ function startChatWith(name) {
 }
 function openNotesChat() { closeModal(); var n = state.chats.find(function (c) { return c.isNotes; }); if (n) openChat(n.id); }
 function createGroupFlow() {
+  /* REAL MODE: pick members from real Ksri users, not the demo list. */
+  if (firebaseReady && realMode) {
+    openModal('<h3>👥 Create group</h3><p class="muted small">Loading Ksri users…</p>');
+    window.KsriFirebase.listUsers(30).then(function (users) {
+      var others = users.filter(function (u) { return u.uid !== myUid(); });
+      var html = '<h3>👥 Create group</h3><label>Group name</label><input id="group-name" type="text" placeholder="e.g. Weekend Trip">' +
+        '<label>Pick members</label>' + (others.length ? others.map(function (u) {
+          return '<label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" class="group-member" value="' + esc(u.uid) + '" style="width:auto"> ' + esc(u.displayName || u.phone || u.email || '') + '</label>';
+        }).join('') : '<p class="muted small">No other Ksri users found yet — invite someone to sign up first.</p>') +
+        '<div class="modal-actions"><button class="btn-outline" onclick="closeModal()">Cancel</button>' +
+        '<button class="btn-primary" onclick="saveGroup()">Create group</button></div>';
+      openModal(html);
+    }).catch(function (e) {
+      openModal('<h3>👥 Create group</h3><p class="error">Could not load users: ' + esc(e && e.message ? e.message : e) + '</p><button class="btn-outline" style="width:100%" onclick="closeModal()">Close</button>');
+    });
+    return;
+  }
   var people = ['Rahul Sharma', 'Priya Nair', 'Arjun Mehta', 'Sneha Reddy', 'Vikram', 'Divya'];
   var html = '<h3>👥 Create group</h3><label>Group name</label><input id="group-name" type="text" placeholder="e.g. Weekend Trip">' +
     '<label>Pick members</label>' + people.map(function (p) {
@@ -1035,6 +1245,20 @@ function createGroupFlow() {
   openModal(html);
 }
 function saveGroup() {
+  /* REAL MODE: create the group in Firestore with real user IDs. */
+  if (firebaseReady && realMode) {
+    var rname = $('group-name').value.trim();
+    var rmembers = Array.prototype.slice.call(document.querySelectorAll('.group-member:checked')).map(function (c) { return c.value; });
+    if (!rname) { toast('Give the group a name'); return; }
+    if (!rmembers.length) { toast('Pick at least one member'); return; }
+    window.KsriFirebase.createGroup(rname, rmembers).then(function (chatId) {
+      var doc = { _id: chatId, participants: [myUid()].concat(rmembers), type: 'group', name: rname, lastMessage: 'Group created 🎉', typing: {} };
+      upsertRealChat(doc);
+      save(); closeModal(); renderChats(); openChat(chatId);
+      toast('Group "' + rname + '" created 👥');
+    }).catch(function (e) { toast('Could not create group: ' + (e && e.message ? e.message : e)); });
+    return;
+  }
   var name = $('group-name').value.trim();
   var members = Array.prototype.slice.call(document.querySelectorAll('.group-member:checked')).map(function (c) { return c.value; });
   if (!name) { toast('Give the group a name'); return; }
@@ -1535,6 +1759,7 @@ function renderSettings() {
     return '<div class="settings-row"><div><div class="lbl">' + label + '</div><div class="val">' + val + '</div></div><div class="toggle' + (on ? ' on' : '') + '" onclick="' + onclick + '"></div></div>';
   };
   $('settings-list').innerHTML =
+    row('🔌 Connection', firebaseReady ? 'Real mode — Firebase connected' + (state.user && state.user.value ? ' · ' + esc(state.user.value) : '') : 'Demo mode — no backend, chats are simulated', 'openModeInfo()') +
     row('👤 Profile', 'Name, bio, avatar colour', 'editMyProfile()') +
     row('🔒 Privacy', 'Last seen: ' + s.lastSeen + ' · Read receipts: ' + (s.readReceipts ? 'On' : 'Off'), 'openPrivacy()') +
     tog('🌙 Dark mode', s.theme === 'dark' ? 'Dark theme is on' : 'Light theme is on', s.theme === 'dark', 'toggleTheme()') +
@@ -1956,11 +2181,341 @@ function checkReminders() {
 }
 setInterval(function () { checkScheduled(); checkReminders(); }, 20000);
 
+/* ================= REAL MODE (Firebase) =================
+   Everything in this section only runs when firebaseReady is true.
+   Demo mode never calls these functions. */
+function myUid() { return (window.KsriFirebase && window.KsriFirebase.user) ? window.KsriFirebase.user.uid : null; }
+function realAvatarColor(uid) { var h = 0; for (var i = 0; i < uid.length; i++) h = (h * 31 + uid.charCodeAt(i)) % 997; return AVATAR_COLORS[h % AVATAR_COLORS.length]; }
+
+/* Firebase init finished (async, from www/firebase.js) — record it and
+   refresh the mode badge. Registered at load time; firebase.js may
+   already have settled before this file ran (placeholder config settles
+   synchronously), so boot also checks window.__ksriFirebaseSettled. */
+window.addEventListener('ksri-firebase-ready', function (e) {
+  firebaseReady = !!(e.detail && e.detail.ready);
+  updateModeBadge();
+});
+
+function updateModeBadge() {
+  var text = firebaseReady
+    ? 'Real mode — Firebase connected · real accounts & chats'
+    : 'Demo mode — no backend, chats are simulated';
+  ['mode-badge', 'settings-mode-badge'].forEach(function (id) {
+    var el = $(id);
+    if (el) { el.textContent = text; el.classList.toggle('real', firebaseReady); el.classList.toggle('demo', !firebaseReady); }
+  });
+  /* Demo-only controls (demo OTP boxes, demo bypass buttons) are hidden
+     in real mode; the real-mode hint is shown instead. */
+  var demoEls = document.querySelectorAll('.demo-only');
+  for (var i = 0; i < demoEls.length; i++) demoEls[i].classList.toggle('hidden', firebaseReady);
+  var realEls = document.querySelectorAll('.real-only');
+  for (var j = 0; j < realEls.length; j++) realEls[j].classList.toggle('hidden', !firebaseReady);
+  refreshAuthModeUI();
+}
+function refreshAuthModeUI() {
+  /* Email in real mode uses a sign-in link / password, not an OTP code —
+     so the Send OTP button is replaced by the email-auth row. */
+  var emailRow = $('email-auth-row');
+  var sendBtn = $('send-otp-btn');
+  if (emailRow) emailRow.classList.toggle('hidden', !(firebaseReady && pendingMethod === 'email'));
+  if (sendBtn) sendBtn.classList.toggle('hidden', firebaseReady && pendingMethod === 'email');
+}
+function openModeInfo() {
+  var html = firebaseReady
+    ? '<h3>🔌 Real mode — Firebase connected</h3>' +
+      '<p>Your account and chats are real: messages are stored in Cloud Firestore and reach other signed-in phones live.</p>' +
+      '<p class="muted small">Signed in as <b>' + esc(state.user ? state.user.value : '') + '</b> · ' +
+      'Chats sync live · Works offline and syncs later · Only chat participants can read a chat (see firestore.rules).</p>' +
+      '<p class="muted small">Still demo-only in real mode: AI replies, translations, voice transcripts, status, channels and calls use the built-in demo data.</p>'
+    : '<h3>🔌 Demo mode</h3>' +
+      '<p>No Firebase config is set up yet, so Ksri runs fully offline: the OTP is always <b>123456</b> and chats are simulated on this device only.</p>' +
+      '<p class="muted small">To go real: follow <b>docs/FIREBASE.md</b> — create a free Firebase project, paste the config into www/firebase-config.js, rebuild. No code changes needed beyond the config.</p>';
+  html += '<button class="btn-outline" style="width:100%" onclick="closeModal()">Close</button>';
+  openModal(html);
+}
+
+/* ---------- REAL AUTH: email link / email + password ---------- */
+function sendEmailLinkFlow() {
+  var v = ($('id-input').value || '').trim().toLowerCase();
+  var err = $('id-error');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+    if (err) { err.textContent = 'Enter a valid email address first.'; err.classList.remove('hidden'); }
+    return;
+  }
+  if (err) err.classList.add('hidden');
+  pendingMethod = 'email'; pendingValue = v;
+  window.KsriFirebase.sendEmailLink(v).then(function () {
+    openModal('<h3>Check your inbox ✉️</h3><p>We sent a sign-in link to <b>' + esc(v) + '</b>. Tap the link to finish signing in, then set up your profile.</p><p class="muted small">On Android the link opens in a browser — if it does not bring you back into the app, use the password option instead. Firebase does not send 6-digit codes by email.</p><button class="btn-outline" style="width:100%" onclick="closeModal()">OK</button>');
+    toast('Sign-in link sent');
+  }).catch(function (e) {
+    if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+  });
+}
+function signInEmailPasswordFlow() {
+  var v = ($('id-input').value || '').trim().toLowerCase();
+  var pw = ($('email-password').value || '');
+  var err = $('id-error');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+    if (err) { err.textContent = 'Enter a valid email address first.'; err.classList.remove('hidden'); }
+    return;
+  }
+  if (pw.length < 6) {
+    if (err) { err.textContent = 'Password must be at least 6 characters.'; err.classList.remove('hidden'); }
+    return;
+  }
+  if (err) err.classList.add('hidden');
+  pendingMethod = 'email'; pendingValue = v;
+  /* One button for both: try sign-in; if there is no account yet,
+     create one. A wrong password for an existing account fails here
+     with a clear message (see friendlyAuthError). */
+  window.KsriFirebase.signInEmailPassword(v, pw).then(function () {
+    showStep('step-profile');
+    $('profile-name').focus();
+    toast('Signed in — set up your profile');
+  }).catch(function () {
+    window.KsriFirebase.createEmailAccount(v, pw).then(function () {
+      showStep('step-profile');
+      $('profile-name').focus();
+      toast('Account created — set up your profile');
+    }).catch(function (e) {
+      if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+    });
+  });
+}
+
+/* ---------- REAL CHATS: Firestore -> local chat model ---------- */
+function mapRealMessage(d) {
+  var me = myUid();
+  var t = (d.createdAt && d.createdAt.toMillis) ? d.createdAt.toMillis() : (d.createdAt || Date.now());
+  var senderName = d.senderId === me ? 'me' : (realUserCache[d.senderId] ? (realUserCache[d.senderId].displayName || 'Chat') : '…');
+  var m = {
+    id: d._id, from: senderName, senderId: d.senderId,
+    text: d.deleted ? '' : (d.text || ''), time: t, type: d.type || 'text',
+    ticks: d.status === 'read' ? 2 : 1, starred: false, reactions: {},
+    edited: !!d.edited, deleted: !!d.deleted, replyTo: d.replyTo || null,
+    dataUrl: d.dataUrl || null, poll: d.poll || null
+  };
+  if (d.reactions) Object.keys(d.reactions).forEach(function (k) { if (d.reactions[k]) m.reactions[k] = true; });
+  if (d.deletedFor && d.deletedFor.indexOf(me) !== -1) m._hiddenForMe = true;
+  return m;
+}
+function upsertRealChat(doc) {
+  var me = myUid(); if (!me) return null;
+  var others = (doc.participants || []).filter(function (u) { return u !== me; });
+  var otherUid = others[0] || null;
+  var chat = getChat(doc._id);
+  if (!chat) {
+    chat = {
+      id: doc._id, name: doc.name || 'Chat', color: realAvatarColor(doc._id),
+      folder: doc.type === 'group' ? 'groups' : 'personal',
+      pinned: false, muted: false, archived: false, locked: false,
+      online: false, typing: false, unread: 0, disappearing: 'off',
+      wallpaper: 'default', members: null, admin: null, messages: [],
+      real: true, participants: doc.participants || [], isGroup: doc.type === 'group'
+    };
+    state.chats.unshift(chat);
+  }
+  chat.real = true;
+  chat.participants = doc.participants || [];
+  chat.isGroup = doc.type === 'group';
+  chat.folder = chat.isGroup ? 'groups' : 'personal';
+  if (chat.isGroup) chat.name = doc.name || 'Group';
+  var typingMap = doc.typing || {};
+  chat.typing = others.some(function (u) { return typingMap[u]; });
+  /* Lightweight preview so the list shows the last message before the
+     message listener for that chat has loaded. */
+  if (doc.lastMessage && !chat.messages.length) {
+    var t = (doc.updatedAt && doc.updatedAt.toMillis) ? doc.updatedAt.toMillis() : Date.now();
+    chat.messages = [{ id: 'preview', from: 'other', text: doc.lastMessage, time: t, type: 'text', ticks: 2, starred: false, reactions: {} }];
+  }
+  /* Resolve the other person's name/avatar (async). */
+  if (!chat.isGroup && otherUid) {
+    chat.otherUid = otherUid;
+    var cached = realUserCache[otherUid];
+    if (cached) {
+      chat.name = cached.displayName || cached.phone || cached.email || 'Chat';
+      chat.color = cached.avatarColor || chat.color;
+    } else {
+      window.KsriFirebase.getUserProfile(otherUid).then(function (p) {
+        if (!p) return;
+        realUserCache[otherUid] = p;
+        chat.name = p.displayName || p.phone || p.email || 'Chat';
+        chat.color = p.avatarColor || chat.color;
+        if (currentChatId === chat.id) {
+          $('chat-name').textContent = chat.name;
+          $('chat-avatar').textContent = initials(chat.name);
+          $('chat-avatar').style.background = chat.color;
+        }
+        renderChats();
+      }).catch(function () { /* name stays generic — best effort */ });
+    }
+  }
+  return chat;
+}
+function startRealChats() {
+  if (!firebaseReady || !window.KsriFirebase || !window.KsriFirebase.user) return;
+  stopRealChats();
+  realChatsUnsub = window.KsriFirebase.listenToMyChats(function (docs, err) {
+    if (err) { toast('Could not load real chats: ' + (err && err.message ? err.message : err)); return; }
+    var ids = {};
+    docs.forEach(function (d) { ids[d._id] = true; upsertRealChat(d); });
+    /* Drop real chats that no longer exist remotely. Demo chats stay in
+       state (they are hidden by renderChats in real mode, and come back
+       if the app ever returns to demo mode). */
+    state.chats = state.chats.filter(function (c) { return !c.real || ids[c.id]; });
+    save();
+    renderChats();
+    if (currentChatId) { var cc = getChat(currentChatId); if (cc) renderMessages(); }
+  });
+}
+function stopRealChats() {
+  if (realChatsUnsub) { try { realChatsUnsub(); } catch (e) { /* ignore */ } realChatsUnsub = null; }
+}
+function startRealMessages(chatId) {
+  stopRealMessages();
+  realMsgsChatId = chatId;
+  realMsgsUnsub = window.KsriFirebase.listenToMessages(chatId, function (docs, err) {
+    if (err) { toast('Could not load messages'); return; }
+    var chat = getChat(chatId); if (!chat) return;
+    chat.messages = docs.map(mapRealMessage).filter(function (m) { return !m._hiddenForMe; });
+    /* Resolve sender names for incoming messages. */
+    var need = {};
+    chat.messages.forEach(function (m) { if (m.senderId && m.senderId !== myUid() && !realUserCache[m.senderId]) need[m.senderId] = true; });
+    Object.keys(need).forEach(function (uid) {
+      window.KsriFirebase.getUserProfile(uid).then(function (p) {
+        if (!p) return;
+        realUserCache[uid] = p;
+        var c2 = getChat(chatId);
+        if (c2 && currentChatId === chatId) {
+          c2.messages.forEach(function (m) { if (m.senderId === uid) m.from = p.displayName || m.from; });
+          renderMessages();
+        }
+      }).catch(function () { /* names stay generic — best effort */ });
+    });
+    if (currentChatId === chatId) renderMessages();
+    renderChats();
+  });
+}
+function stopRealMessages() {
+  if (realMsgsUnsub) { try { realMsgsUnsub(); } catch (e) { /* ignore */ } realMsgsUnsub = null; }
+  realMsgsChatId = null;
+}
+
+/* ---------- REAL NEW CHAT / GROUP ---------- */
+function openRealNewChat() {
+  var html = '<h3>New chat</h3><p class="muted small">Find a real Ksri user by their phone number or email. They must have signed up on Ksri already.</p>' +
+    '<label>Phone or email</label><input id="real-search-input" type="text" placeholder="+91 98765 43210 or name@example.com">' +
+    '<div class="modal-actions"><button class="btn-outline" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn-primary" onclick="searchRealUser()">Search</button></div>' +
+    '<div id="real-search-results"></div>' +
+    '<button class="menu-item" onclick="closeModal();createGroupFlow()">👥 New group</button>' +
+    '<button class="menu-item" onclick="closeModal();openNotesChat()">📝 Notes to Self</button>';
+  openModal(html);
+}
+function searchRealUser() {
+  var v = ($('real-search-input').value || '').trim();
+  var box = $('real-search-results');
+  if (!v) { box.innerHTML = '<p class="error">Enter a phone number or email.</p>'; return; }
+  box.innerHTML = '<p class="muted small">Searching…</p>';
+  window.KsriFirebase.findUserByContact(v).then(function (users) {
+    if (!users.length) {
+      box.innerHTML = '<p class="muted">No Ksri user found for <b>' + esc(v) + '</b>. They need to sign up on Ksri first.</p>';
+      return;
+    }
+    box.innerHTML = users.map(function (u) {
+      if (u.uid === myUid()) return '<p class="muted small">That is you 🙂</p>';
+      return '<button class="menu-item" onclick="startRealChatWith(\'' + esc(u.uid) + '\',\'' + esc(u.displayName || u.phone || u.email || '').replace(/\'/g, "\\'") + '\')">👤 ' + esc(u.displayName || u.phone || u.email || '') + ' <span class="muted small">' + esc(u.phone || u.email || '') + '</span></button>';
+    }).join('');
+  }).catch(function (e) {
+    box.innerHTML = '<p class="error">Search failed: ' + esc(e && e.message ? e.message : e) + '</p>';
+  });
+}
+function startRealChatWith(uid, name) {
+  window.KsriFirebase.ensureDM(uid).then(function (chatId) {
+    var doc = { _id: chatId, participants: [myUid(), uid], type: 'dm', name: '', lastMessage: '', typing: {} };
+    var chat = upsertRealChat(doc);
+    if (name) chat.name = name;
+    save(); closeModal(); renderChats(); openChat(chatId);
+  }).catch(function (e) { toast('Could not start chat: ' + (e && e.message ? e.message : e)); });
+}
+
+/* ---------- REAL BOOT ---------- */
+function afterFirebaseAuth() {
+  if (window.KsriFirebase && window.KsriFirebase.user) {
+    realMode = true;
+    var fbUser = window.KsriFirebase.user;
+    window.KsriFirebase.getUserProfile(fbUser.uid).then(function (p) {
+      if (p) {
+        state.user = {
+          name: p.displayName || 'Ksri user', bio: p.bio || '',
+          color: p.avatarColor || '#25D366',
+          method: p.phone ? 'phone' : 'email', value: p.phone || p.email || '',
+          uid: fbUser.uid, joinedAt: (state.user && state.user.joinedAt) || Date.now()
+        };
+      } else if (!state.user) {
+        state.user = {
+          name: fbUser.phoneNumber || fbUser.email || 'Ksri user',
+          bio: "Hey there! I'm using Ksri.", color: '#25D366',
+          method: fbUser.phoneNumber ? 'phone' : 'email',
+          value: fbUser.phoneNumber || fbUser.email || '',
+          uid: fbUser.uid, joinedAt: Date.now()
+        };
+      } else {
+        state.user.uid = fbUser.uid;
+      }
+      save();
+      enterApp();
+    }).catch(function () { enterApp(); });
+  } else {
+    /* Real mode configured but not signed in — show the real sign-in screen. */
+    realMode = false;
+    $('auth-screen').classList.remove('hidden');
+    $('app-screen').classList.add('hidden');
+    showStep('step-method');
+    updateModeBadge();
+  }
+  checkScheduled(); checkReminders();
+}
+
 /* ---------- BOOT ---------- */
 document.addEventListener('DOMContentLoaded', function () {
   applyTheme(); applyFontSize();
   onTypingInput();
-  if (state.user) enterApp();
-  else { $('auth-screen').classList.remove('hidden'); showStep('step-method'); }
-  checkScheduled(); checkReminders();
+  updateModeBadge();
+  var booted = false;
+  var boot = function () {
+    if (booted) return; booted = true;
+    /* firebase.js may have settled already (placeholder config settles
+       synchronously); otherwise this runs when its ready event fires,
+       or after the 4s fallback below (CDN unreachable -> demo mode). */
+    if (window.KsriFirebase) firebaseReady = !!window.KsriFirebase.ready;
+    updateModeBadge();
+    if (firebaseReady) {
+      /* Returning from an email sign-in link? Complete it first. */
+      if (window.KsriFirebase.isEmailLink && window.KsriFirebase.isEmailLink()) {
+        window.KsriFirebase.completeEmailLink().then(function () {
+          afterFirebaseAuth();
+        }).catch(function (e) {
+          toast(window.KsriFirebase.friendlyAuthError(e));
+          realMode = false;
+          $('auth-screen').classList.remove('hidden');
+          showStep('step-method');
+          updateModeBadge();
+        });
+        return;
+      }
+      afterFirebaseAuth();
+      return;
+    }
+    /* Demo mode (unchanged behaviour). */
+    if (state.user) enterApp();
+    else { $('auth-screen').classList.remove('hidden'); showStep('step-method'); }
+    checkScheduled(); checkReminders();
+  };
+  if (window.__ksriFirebaseSettled) {
+    boot();
+  } else {
+    window.addEventListener('ksri-firebase-ready', boot);
+    setTimeout(boot, 4000);
+  }
 });

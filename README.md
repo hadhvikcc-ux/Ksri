@@ -10,6 +10,29 @@ that loads a standalone, **offline** web app from `www/`. On Windows the same
 app runs in an [Electron](https://www.electronjs.org/) window. No server, no
 network — all data lives on the device in `localStorage` (key `ksri_v1`).
 
+## Real mode (Firebase) — real accounts + real chats
+
+Ksri ships in **demo mode** (offline, demo OTP `123456`, simulated chats).
+To make it function for real — real SMS codes and real messages between
+two phones — follow **[`docs/FIREBASE.md`](docs/FIREBASE.md)** (free tier,
+about 15 minutes in the Firebase console, no coding):
+
+1. Create a Firebase project called `Ksri`.
+2. Enable Phone, Email/Password and Email-link sign-in.
+3. Create a Firestore database (production mode).
+4. Paste `firestore.rules` into the console's Rules tab and publish.
+5. Copy the web app config into `www/firebase-config.js`.
+6. Rebuild / reinstall — the sign-up screen shows a green
+   **"Real mode — Firebase connected"** badge, and demo contacts are
+   replaced by your real chats.
+
+Real mode: phone sign-in sends a **real SMS code**; email sign-in is by
+**sign-in link or password** (Firebase does not send email OTP codes —
+the app never fakes one). Chats sync live over Firestore, work offline
+and sync later, and only chat participants can read a chat. If Firebase
+is not configured or cannot be reached, the app falls back to demo mode
+automatically — nothing breaks.
+
 - App ID: `com.hadhvik.ksri`
 - App name: `Ksri`
 - Web directory: `www/`
@@ -20,6 +43,9 @@ network — all data lives on the device in `localStorage` (key `ksri_v1`).
 - **Registration with phone OR email** — pick a method, get a 6-digit OTP
   (demo: the code is shown on screen, since there is no backend yet), then
   set up your profile (name, bio, avatar colour). Log out / switch account.
+  With Firebase configured ([`docs/FIREBASE.md`](docs/FIREBASE.md)), phone
+  sign-in sends a real SMS code and email sign-in uses a sign-in link or
+  password instead.
 - **Chats** — 10 seeded conversations (Amma, Rahul, Priya, Project Team,
   Family Group, Ksri AI, Notes to Self…), avatars, last message, time,
   unread badges, double-tick read receipts, online / typing indicators.
@@ -132,7 +158,11 @@ electron/
 www/
   index.html            App shell (auth, tabs, chat view, overlays)
   styles.css            WhatsApp-green theme, light + dark
-  app.js                All features, localStorage key ksri_v1
+  app.js                All features, localStorage key ksri_v1; demo/real mode switch
+  firebase-config.js    Firebase project values (PLACEHOLDER until set up)
+  firebase.js           Real auth + Firestore (CDN SDK, no bundler)
+firestore.rules         Firestore security rules (paste into Firebase console)
+docs/FIREBASE.md        Real-mode setup guide (free Firebase project)
 tests/ksri.test.js      Node test: files exist + feature strings present
 .github/workflows/
   ci.yml                Node 24, npm ci, npm test
@@ -147,7 +177,14 @@ docs/WINDOWS_IOS.md     How the Windows + iOS builds work (incl. signing)
 
 - OTP is shown on screen — there is no SMS/email backend yet. Plug in a
   real OTP provider (e.g. Firebase Auth) to make it production-ready.
+  **Real mode is now built in — see [`docs/FIREBASE.md`](docs/FIREBASE.md):
+  paste your Firebase config into `www/firebase-config.js` and the app
+  switches to real SMS codes and real chats automatically.**
 - Simulated replies, AI answers, translations and voice transcripts use
-  built-in canned data — they work offline by design.
+  built-in canned data — they work offline by design. In real mode,
+  1:1 and group chats are real; status, channels, calls and Ksri AI are
+  still demo data.
 - Voice notes and photos are stored as data URLs in localStorage, so very
-  large media can fill browser storage; export a backup regularly.
+  large media can fill browser storage; export a backup regularly. In
+  real chats, photos/voice notes must fit Firestore's ~1 MB per-message
+  limit.

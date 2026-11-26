@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Ksri — Cloud Firestore security rules (REAL mode).
+//
+// Deploy: Firebase console → Build → Firestore Database → Rules → paste
+// this file → Publish. (See docs/FIREBASE.md.)
+//
+// Summary:
+// - Anyone signed in can READ user profiles (needed to find people by
+//   phone/email and to show names/avatars in chats). A user can only
+//   WRITE their own profile document.
+// - A chat can only be READ or WRITTEN by its participants. Nobody else
+//   — not even another signed-in user — can see it.
+// - Messages inherit the same rule: only participants of that chat.
+// - A chat may only be created with the creator in `participants`, and
+//   participants may never be changed afterwards (so nobody can add
+//   themselves to someone else's chat).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isMe(uid) { return signedIn() && request.auth.uid == uid; }
+
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if isMe(uid);
+      allow delete: if false;
+    }
+
+    match /chats/{chatId} {
+      function isParticipant() {
+        return signedIn() && request.auth.uid in resource.data.participants;
+      }
+      function creatingAsParticipant() {
+        return signedIn() && request.auth.uid in request.resource.data.participants;
+      }
+      allow read: if isParticipant();
+      allow create: if creatingAsParticipant();
+      // Participants list is immutable after creation.
+      allow update: if isParticipant()
+        && request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
+
+      match /messages/{msgId} {
+        function inChat() {
+          return signedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        }
+        allow read: if inChat();
+        allow create: if inChat()
+          && request.resource.data.senderId == request.auth.uid;
+        allow update: if inChat();
+        allow delete: if false;
+      }
+    }
+  }
+}

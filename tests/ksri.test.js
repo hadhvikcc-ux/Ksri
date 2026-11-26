@@ -240,6 +240,108 @@ test('Windows + iOS CI fixes: no publish, SPM xcodeproj build', () => {
   assert.doesNotMatch(docs, /runs `pod install/, 'docs must not present pod install as the iOS fix');
 });
 
+test('Firebase real mode: config placeholder + SDK module', () => {
+  // Placeholder config must exist and be inert (no real keys committed).
+  const cfgPath = path.join(root, 'www', 'firebase-config.js');
+  assert.ok(fs.existsSync(cfgPath), 'www/firebase-config.js should exist');
+  const cfg = fs.readFileSync(cfgPath, 'utf8');
+  assert.match(cfg, /PASTE_YOUR_API_KEY_HERE/);
+  assert.match(cfg, /PASTE_YOUR_PROJECT_ID/);
+  assert.match(cfg, /KSRI_FIREBASE_CONFIGURED/);
+  assert.match(cfg, /window\.KSRI_FIREBASE_CONFIG/);
+  assert.doesNotMatch(cfg, /AIza[0-9A-Za-z_-]{20,}/, 'no real Firebase apiKey may be committed');
+  // firebase.js: CDN modular SDK, no bundler, real auth + Firestore APIs.
+  const fbPath = path.join(root, 'www', 'firebase.js');
+  assert.ok(fs.existsSync(fbPath), 'www/firebase.js should exist');
+  const fb = fs.readFileSync(fbPath, 'utf8');
+  assert.match(fb, /gstatic\.com\/firebasejs\//);
+  assert.match(fb, /FIREBASE_SDK_VERSION = '13\.4\.0'/);
+  assert.match(fb, /signInWithPhoneNumber/);
+  assert.match(fb, /RecaptchaVerifier/);
+  assert.match(fb, /confirmationResult|_confirmation\.confirm/);
+  assert.match(fb, /sendSignInLinkToEmail/);
+  assert.match(fb, /isSignInWithEmailLink/);
+  assert.match(fb, /createUserWithEmailAndPassword/);
+  assert.match(fb, /signInWithEmailAndPassword/);
+  assert.match(fb, /onSnapshot/);
+  assert.match(fb, /serverTimestamp/);
+  assert.match(fb, /persistentLocalCache/);
+  assert.match(fb, /window\.KsriFirebase/);
+  assert.match(fb, /ksri-firebase-ready/);
+  // Firebase does NOT send email OTP codes — the code must say so, and
+  // must never fake one.
+  assert.match(fb, /does NOT send 6-digit codes by email/);
+  assert.doesNotMatch(fb, /Math\.floor\(100000 \+ Math\.random\(\) \* 900000\)/);
+});
+
+test('Firestore security rules: participants only', () => {
+  const rulesPath = path.join(root, 'firestore.rules');
+  assert.ok(fs.existsSync(rulesPath), 'firestore.rules should exist');
+  const rules = fs.readFileSync(rulesPath, 'utf8');
+  assert.match(rules, /rules_version = '2'/);
+  assert.match(rules, /match \/users\/\{uid\}/);
+  assert.match(rules, /match \/chats\/\{chatId\}/);
+  assert.match(rules, /match \/messages\/\{msgId\}/);
+  assert.match(rules, /request\.auth\.uid in .*participants/);
+  assert.match(rules, /request\.resource\.data\.senderId == request\.auth\.uid/);
+  assert.match(rules, /participants == resource\.data\.participants/);
+});
+
+test('Real mode in app.js: mode detection + demo fallback', () => {
+  // Mode detection: firebaseReady flag, realMode, badge text.
+  assert.match(appJs, /var firebaseReady = false/);
+  assert.match(appJs, /var realMode = false/);
+  assert.match(appJs, /updateModeBadge/);
+  assert.match(appJs, /Real mode — Firebase connected/);
+  assert.match(appJs, /Demo mode — no backend/);
+  assert.match(appJs, /ksri-firebase-ready/);
+  // Real auth flows exist; demo OTP path is untouched (see OTP test).
+  for (const s of ['sendPhoneCode', 'confirmPhoneCode', 'sendEmailLinkFlow', 'signInEmailPasswordFlow', 'completeEmailLink', 'upsertUserProfile', 'findUserByContact', 'ensureDM', 'startRealChats', 'listenToMyChats', 'listenToMessages', 'sendChatMessage', 'markChatRead', 'setTyping', 'openRealNewChat', 'searchRealUser', 'startRealChatWith', 'afterFirebaseAuth', 'stopRealChats', 'stopRealMessages']) {
+    assert.ok(appJs.includes(s), 'app.js should contain ' + s);
+  }
+  // Demo fallback: demo OTP + demo bypass still present, and demo chats
+  // are only hidden (filtered in renderChats), never deleted.
+  assert.match(appJs, /var DEMO_OTP = '123456'/);
+  assert.match(appJs, /continueDemoAccount/);
+  assert.match(appJs, /if \(realMode\) list = list\.filter\(function \(c\) \{ return c\.real \|\| c\.isAI \|\| c\.isNotes; \}\)/);
+  // Real messages go through Firestore, not the simulated reply timer.
+  const sendFn = appJs.slice(appJs.indexOf('function sendMessage()'), appJs.indexOf('function aiReply('));
+  assert.match(sendFn, /sendChatMessage/);
+  assert.match(sendFn, /chat\.real/);
+  // In real phone mode the demo code must NEVER verify: if no SMS was
+  // requested, verifyOtp refuses instead of falling to the demo check.
+  const verifyFn = appJs.slice(appJs.indexOf('function verifyOtp()'), appJs.indexOf('function cycleAvatarColor()'));
+  assert.match(verifyFn, /hasPendingPhoneCode/);
+  assert.match(verifyFn, /No SMS code was requested/);
+  assert.ok(verifyFn.indexOf('No SMS code was requested') < verifyFn.indexOf('v === DEMO_OTP'), 'real-mode refusal must come before the demo check');
+});
+
+test('Real mode wiring in index.html + CSS', () => {
+  assert.match(indexHtml, /<script src="firebase-config\.js"><\/script>/);
+  assert.match(indexHtml, /<script src="firebase\.js"><\/script>/);
+  // Firebase scripts load before app.js.
+  assert.ok(indexHtml.indexOf('firebase-config.js') < indexHtml.indexOf('app.js'), 'firebase-config.js must load before app.js');
+  assert.ok(indexHtml.indexOf('firebase.js') < indexHtml.indexOf('app.js'), 'firebase.js must load before app.js');
+  assert.match(indexHtml, /id="mode-badge"/);
+  assert.match(indexHtml, /id="settings-mode-badge"/);
+  assert.match(indexHtml, /id="recaptcha-container"/);
+  assert.match(indexHtml, /id="email-auth-row"/);
+  assert.match(indexHtml, /sendEmailLinkFlow\(\)/);
+  assert.match(indexHtml, /signInEmailPasswordFlow\(\)/);
+  assert.match(indexHtml, /demo-only/);
+  assert.match(css, /\.mode-badge/);
+  assert.match(css, /\.mode-badge\.real/);
+  assert.match(css, /#recaptcha-container/);
+  // Docs cover the setup end to end.
+  const fbDocs = fs.readFileSync(path.join(root, 'docs', 'FIREBASE.md'), 'utf8');
+  assert.match(fbDocs, /console\.firebase\.google\.com/);
+  assert.match(fbDocs, /firestore\.rules/);
+  assert.match(fbDocs, /firebase-config\.js/);
+  assert.match(fbDocs, /10 free/);
+  assert.match(fbDocs, /does \*\*not\*\* send 6-digit codes by email/);
+  assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /Real mode \(Firebase\)/);
+});
+
 test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');
