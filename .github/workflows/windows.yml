@@ -31,7 +31,12 @@ jobs:
       - run: npm ci
 
       - name: Build Windows installer
-        run: npx electron-builder --win
+        # --publish=never: electron-builder 26 implicitly tries to publish
+        # in CI and fails with "GitHub Personal Access Token is not set"
+        # (GH_TOKEN) even though the .exe was already built. The artifact
+        # upload below is how the installer is distributed, not publishing.
+        # "publish": null in package.json is the second, belt-and-braces fix.
+        run: npx electron-builder --win --publish=never
         env:
           # No code signing: the .exe is unsigned, SmartScreen may warn.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
