@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Ksri — Chat, Call, Share</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="phone">
+
+  <!-- ============ AUTH / ONBOARDING ============ -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-hero">
+      <div class="logo">K</div>
+      <h1>Ksri</h1>
+      <p class="tagline">Chat, call &amp; share — with your phone <b>or</b> your email.</p>
+    </div>
+
+    <!-- Step 1: choose method -->
+    <div id="step-method" class="auth-card">
+      <h2>Create your account</h2>
+      <p class="muted">Unlike other messengers, Ksri lets you register with a phone number <b>or</b> an email address.</p>
+      <div class="method-row">
+        <button class="method-btn active" data-method="phone" onclick="setMethod('phone')">📱 Phone</button>
+        <button class="method-btn" data-method="email" onclick="setMethod('email')">✉️ Email</button>
+      </div>
+      <label id="id-label" for="id-input">Phone number</label>
+      <input id="id-input" type="tel" placeholder="+91 98765 43210" autocomplete="off">
+      <p id="id-error" class="error hidden"></p>
+      <div class="demo-otp demo-otp-big">Demo OTP for this build: <b class="demo-otp-code" id="demo-otp-signup">123456</b><br><span class="tiny">Use this code — no SMS is sent. It is the same code every time.</span></div>
+      <button class="btn-primary" onclick="sendOtp()">Send OTP →</button>
+      <button class="btn-outline" onclick="continueDemoAccount()">Continue with demo account →</button>
+      <button class="btn-link" onclick="skipOtp()">Skip OTP (demo)</button>
+      <p class="tiny muted">Demo build: no SMS/email is actually sent. Your OTP is <b>123456</b> and is shown on this screen and the next screen.</p>
+    </div>
+
+    <!-- Step 2: OTP -->
+    <div id="step-otp" class="auth-card hidden">
+      <h2>Enter the 6-digit code</h2>
+      <p class="muted">We sent a code to <b id="otp-target"></b></p>
+      <div class="demo-otp demo-otp-big">Demo OTP: <b class="demo-otp-code" id="demo-otp">123456</b> <span class="tiny">(shown because there is no backend yet — always 123456)</span></div>
+      <p id="otp-note" class="info-note hidden"></p>
+      <input id="otp-input" type="text" inputmode="numeric" maxlength="6" placeholder="• • • • • •" autocomplete="off" oninput="otpTyped()">
+      <p id="otp-error" class="error hidden"></p>
+      <button class="btn-outline" onclick="fillDemoOtp()">Use demo code 123456</button>
+      <button class="btn-primary" onclick="verifyOtp()">Verify &amp; continue</button>
+      <button class="btn-link" onclick="resendOtp()">Resend code</button>
+      <button class="btn-link" onclick="continueDemoAccount()">Skip OTP (demo) →</button>
+      <button class="btn-link" onclick="backToMethod()">← Change number / email</button>
+    </div>
+
+    <!-- Step 3: profile -->
+    <div id="step-profile" class="auth-card hidden">
+      <h2>Your profile</h2>
+      <p class="muted">This is how people will see you on Ksri.</p>
+      <div class="profile-preview">
+        <div id="profile-avatar" class="avatar lg" style="background:#25D366">K</div>
+        <button class="btn-link" onclick="cycleAvatarColor()">Change colour</button>
+      </div>
+      <label for="profile-name">Display name</label>
+      <input id="profile-name" type="text" placeholder="e.g. Hadhvik" maxlength="30">
+      <label for="profile-bio">Bio / About</label>
+      <input id="profile-bio" type="text" placeholder="Hey there! I'm using Ksri." maxlength="80">
+      <p id="profile-error" class="error hidden"></p>
+      <button class="btn-primary" onclick="finishRegistration()">Start chatting →</button>
+    </div>
+  </div>
+
+  <!-- ============ MAIN APP ============ -->
+  <div id="app-screen" class="screen hidden">
+    <header id="app-header">
+      <div class="brand"><span class="logo sm">K</span><span class="brand-name">Ksri</span></div>
+      <div class="header-actions">
+        <button class="icon-btn" title="Calendar" onclick="switchTab('calendar')">📅</button>
+        <button class="icon-btn" title="Tasks" onclick="switchTab('tasks')">✅</button>
+        <button class="icon-btn" title="New chat" onclick="openNewChat()">＋</button>
+        <button class="icon-btn" title="Search" onclick="toggleGlobalSearch()">🔍</button>
+        <button class="icon-btn" title="Menu" onclick="openAppMenu()">⋮</button>
+      </div>
+    </header>
+    <div id="reminder-banner" class="reminder-banner hidden">
+      <div class="body"><b id="reminder-banner-title">⏰ Reminder</b><div class="small" id="reminder-banner-text"></div></div>
+      <button class="btn-outline" style="margin:0;padding:6px 10px" onclick="snoozeReminder(activeReminderId,10)">Snooze 10m</button>
+      <button class="btn-primary" style="width:auto;margin:0;padding:6px 12px" onclick="dismissReminder(activeReminderId)">Dismiss</button>
+    </div>
+    <div id="global-search" class="hidden">
+      <input id="global-search-input" type="text" placeholder="Search chats, messages, contacts…" oninput="renderChats()">
+      <button class="btn-link" onclick="toggleGlobalSearch()">Cancel</button>
+    </div>
+
+    <!-- Chats -->
+    <main id="tab-chats" class="tab-page">
+      <div class="folder-chips" id="folder-chips">
+        <button class="chip active" data-folder="all" onclick="setFolder('all')">All</button>
+        <button class="chip" data-folder="unread" onclick="setFolder('unread')">Unread</button>
+        <button class="chip" data-folder="personal" onclick="setFolder('personal')">Personal</button>
+        <button class="chip" data-folder="work" onclick="setFolder('work')">Work</button>
+        <button class="chip" data-folder="groups" onclick="setFolder('groups')">Groups</button>
+      </div>
+      <div id="locked-section"></div>
+      <div id="chat-list" class="list"></div>
+      <div id="archived-row" class="archived-row" onclick="toggleArchived()"></div>
+      <div id="archived-list" class="list hidden"></div>
+      <button class="fab" title="New chat" onclick="openNewChat()">💬</button>
+    </main>
+
+    <!-- Status -->
+    <main id="tab-status" class="tab-page hidden">
+      <div class="status-my" onclick="openMyStatus()">
+        <div class="avatar" id="my-status-avatar" style="background:#25D366">K</div>
+        <div><b>My status</b><div class="muted small" id="my-status-sub">Tap to add a status update</div></div>
+        <span class="plus-badge">＋</span>
+      </div>
+      <h3 class="section-title">Recent updates</h3>
+      <div id="status-list" class="list"></div>
+      <h3 class="section-title">Viewed updates</h3>
+      <div id="status-viewed-list" class="list"></div>
+    </main>
+
+    <!-- Calls -->
+    <main id="tab-calls" class="tab-page hidden">
+      <div class="call-actions">
+        <button class="btn-primary" onclick="startCallPrompt(false)">📞 Voice call</button>
+        <button class="btn-primary" onclick="startCallPrompt(true)">🎥 Video call</button>
+        <button class="btn-primary" onclick="startScreenShareCallPrompt()">🖥️ Share screen</button>
+        <button class="btn-outline" onclick="simulateIncomingCall()">Simulate incoming call</button>
+      </div>
+      <h3 class="section-title">Recent</h3>
+      <div id="call-list" class="list"></div>
+    </main>
+
+    <!-- Calendar -->
+    <main id="tab-calendar" class="tab-page hidden">
+      <div class="planner-head">
+        <h3 class="section-title" style="padding:0">📅 Calendar</h3>
+        <button class="btn-outline" style="margin:0" onclick="requestNotificationPermission()">🔔 Reminders on</button>
+      </div>
+      <p class="muted small" style="padding:6px 14px 0">Events linked to your chats. Tap a day to see its events — every event reminds you <b>1 day before</b>.</p>
+      <div class="cal-nav">
+        <button class="icon-btn cal-nav-btn" onclick="changeCalMonth(-1)">‹</button>
+        <b id="cal-month-label"></b>
+        <button class="icon-btn cal-nav-btn" onclick="changeCalMonth(1)">›</button>
+        <button class="chip" onclick="goToToday()">Today</button>
+      </div>
+      <div id="cal-grid" class="cal-grid"></div>
+      <div style="padding:0 14px"><button class="btn-primary" onclick="openEventCreator(null)">＋ Add event</button></div>
+      <h3 class="section-title">Upcoming events</h3>
+      <div id="event-list" class="list"></div>
+      <h3 class="section-title">⏰ Reminders (1 day before)</h3>
+      <div id="reminder-list" class="list"></div>
+    </main>
+
+    <!-- Tasks / Todo -->
+    <main id="tab-tasks" class="tab-page hidden">
+      <div class="planner-head">
+        <h3 class="section-title" style="padding:0">✅ To-do list</h3>
+        <button class="btn-outline" style="margin:0" onclick="requestNotificationPermission()">🔔 Reminders on</button>
+      </div>
+      <p class="muted small" style="padding:6px 14px 0">Tasks linked to your chats. Every task with a due date reminds you <b>1 day before</b> it's due.</p>
+      <div class="folder-chips" id="todo-chips">
+        <button class="chip active" data-todo-filter="all" onclick="setTodoFilter('all')">All</button>
+        <button class="chip" data-todo-filter="open" onclick="setTodoFilter('open')">Open</button>
+        <button class="chip" data-todo-filter="done" onclick="setTodoFilter('done')">Done</button>
+        <button class="chip" data-todo-filter="today" onclick="setTodoFilter('today')">Due today</button>
+      </div>
+      <div style="padding:0 14px 8px"><label style="margin-top:0">Filter by chat</label><select id="todo-chat-filter" onchange="setTodoChatFilter(this.value)"></select></div>
+      <div style="padding:0 14px"><button class="btn-primary" onclick="openTodoCreator(null)">＋ Add a task</button></div>
+      <div id="todo-list" class="list" style="margin-top:8px"></div>
+    </main>
+
+    <!-- Channels -->
+    <main id="tab-channels" class="tab-page hidden">
+      <h3 class="section-title">Channels you follow</h3>
+      <div id="channel-list" class="list"></div>
+      <h3 class="section-title">Discover channels</h3>
+      <div id="channel-discover" class="list"></div>
+      <button class="btn-outline" onclick="createChannel()">＋ Create a channel</button>
+    </main>
+
+    <!-- Settings -->
+    <main id="tab-settings" class="tab-page hidden">
+      <div class="settings-profile" onclick="editMyProfile()">
+        <div class="avatar lg" id="settings-avatar" style="background:#25D366">K</div>
+        <div><b id="settings-name">—</b><div class="muted small" id="settings-bio">—</div><div class="muted tiny" id="settings-id">—</div></div>
+      </div>
+      <div class="settings-group" id="settings-list"></div>
+      <button class="btn-danger-outline" onclick="logout()">Log out / Switch account</button>
+      <p class="tiny muted center">Ksri v1.0.0 · Offline-first demo · Data stays on your device (localStorage)</p>
+    </main>
+
+    <nav id="bottom-nav">
+      <button class="nav-btn active" data-tab="chats" onclick="switchTab('chats')">💬<span>Chats</span><i class="nav-badge hidden" id="nav-unread"></i></button>
+      <button class="nav-btn" data-tab="status" onclick="switchTab('status')">⭕<span>Status</span></button>
+      <button class="nav-btn" data-tab="calls" onclick="switchTab('calls')">📞<span>Calls</span></button>
+      <button class="nav-btn" data-tab="channels" onclick="switchTab('channels')">📢<span>Channels</span></button>
+      <button class="nav-btn" data-tab="calendar" onclick="switchTab('calendar')">📅<span>Calendar</span><i class="nav-badge hidden" id="nav-events"></i></button>
+      <button class="nav-btn" data-tab="tasks" onclick="switchTab('tasks')">✅<span>Tasks</span><i class="nav-badge hidden" id="nav-tasks"></i></button>
+      <button class="nav-btn" data-tab="settings" onclick="switchTab('settings')">⚙️<span>Settings</span></button>
+    </nav>
+  </div>
+
+  <!-- ============ CHAT VIEW ============ -->
+  <div id="chat-screen" class="screen hidden">
+    <header id="chat-header">
+      <button class="icon-btn" onclick="closeChat()">←</button>
+      <div class="avatar" id="chat-avatar">?</div>
+      <div class="chat-head-info" onclick="openChatInfo()">
+        <b id="chat-name">—</b>
+        <span class="muted small" id="chat-status">online</span>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" title="Add calendar event for this chat" onclick="openEventCreator(currentChatId)">📅</button>
+        <button class="icon-btn" title="Add a task for this chat" onclick="openTodoCreator(currentChatId)">✅</button>
+        <button class="icon-btn" title="Search in chat" onclick="openInChatSearch()">🔍</button>
+        <button class="icon-btn" title="Voice call" onclick="startChatCall(false)">📞</button>
+        <button class="icon-btn" title="Video call" onclick="startChatCall(true)">🎥</button>
+        <button class="icon-btn" title="Share screen in call" onclick="startChatScreenShare()">🖥️</button>
+        <button class="icon-btn" title="Chat menu" onclick="openChatMenu()">⋮</button>
+      </div>
+    </header>
+    <div id="in-chat-search" class="hidden">
+      <input id="in-chat-search-input" type="text" placeholder="Search in this chat…" oninput="renderMessages()">
+      <button class="btn-link" onclick="closeInChatSearch()">✕</button>
+    </div>
+    <div id="chat-wallpaper-note" class="wallpaper-note hidden"></div>
+    <div id="messages" class="messages"></div>
+    <div id="smart-replies" class="smart-replies"></div>
+    <div id="emoji-picker" class="emoji-picker hidden"></div>
+    <div id="reaction-bar" class="reaction-bar hidden"></div>
+    <footer id="composer">
+      <button class="icon-btn" title="Emoji" onclick="toggleEmojiPicker()">😊</button>
+      <input id="msg-input" type="text" placeholder="Message" autocomplete="off" oninput="onTypingInput()" onkeydown="if(event.key==='Enter')sendMessage()">
+      <button class="icon-btn" title="Attach" onclick="document.getElementById('attach-input').click()">📎</button>
+      <input id="attach-input" type="file" accept="image/*" class="hidden" onchange="attachPhoto(event)">
+      <button class="icon-btn" title="Schedule message" onclick="openSchedulePicker()">🕒</button>
+      <button class="icon-btn" title="Poll" onclick="openPollCreator()">📊</button>
+      <button id="send-btn" class="send-btn" onclick="sendMessage()">➤</button>
+      <button id="mic-btn" class="mic-btn" title="Hold to record voice note" onmousedown="startVoiceNote(event)" onmouseup="stopVoiceNote(event)" ontouchstart="startVoiceNote(event)" ontouchend="stopVoiceNote(event)">🎙️</button>
+    </footer>
+    <div id="reply-preview" class="reply-preview hidden"></div>
+  </div>
+
+  <!-- ============ OVERLAYS ============ -->
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
+  <div id="call-screen" class="call-screen hidden"></div>
+  <div id="status-viewer" class="status-viewer hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

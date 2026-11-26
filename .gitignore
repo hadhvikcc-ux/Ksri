@@ -1,0 +1,17 @@
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+# Android — the native platform is generated on CI, never committed
+# (it contains binary PNG/JAR assets). Keep only www/, capacitor.config.json, etc.
+android/
+# Android build outputs / local SDK config — never commit these
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/release/
+*.keystore
+*.jks
+keystore.properties
