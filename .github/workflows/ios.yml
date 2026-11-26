@@ -46,30 +46,77 @@ jobs:
           if [ ! -d ios ]; then npx cap add ios; fi
           npx cap sync ios
 
+      - name: List generated iOS platform
+        # Shows in the log what `npx cap add ios` / `cap sync` actually
+        # produced, so a missing App.xcworkspace is visible here, not
+        # later as a cryptic xcodebuild exit 66.
+        run: ls -la ios/App/
+
+      - name: Install CocoaPods dependencies
+        # Capacitor's iOS project uses CocoaPods: App.xcworkspace is only
+        # created by `pod install`. Without it xcodebuild fails with
+        # "error: 'ios/App/App.xcworkspace' does not exist" (exit 66).
+        # If pod install fails, continue — the build steps below fall
+        # back to the plain .xcodeproj if a workspace was not produced.
+        run: |
+          cd ios/App
+          pod install --repo-update || pod install || echo "pod install failed — continuing; build will fall back to App.xcodeproj if no workspace was produced"
+          ls -la
+
+      - name: Verify App.xcworkspace exists
+        # Fail fast with a clear message if neither the workspace nor the
+        # plain project exists, instead of a bare xcodebuild exit 66.
+        run: |
+          test -f ios/App/App.xcworkspace || (echo "WARNING: ios/App/App.xcworkspace missing after pod install — checking for .xcodeproj fallback"; ls -R ios/App)
+          if [ ! -f ios/App/App.xcworkspace ] && [ ! -f ios/App/App.xcodeproj ]; then echo "ERROR: ios/App/App.xcworkspace missing after pod install and no App.xcodeproj either"; ls -R ios/App; exit 1; fi
+          ls -la ios/App/App.xcworkspace || ls -la ios/App/App.xcodeproj
+
       - name: List available simulators
         run: xcrun simctl list devices available
 
       - name: Build for iOS Simulator
         # Simulator build needs no signing and proves the app compiles.
+        # Uses the workspace when pod install produced it, otherwise
+        # falls back to the plain .xcodeproj.
         run: |
-          xcodebuild -workspace ios/App/App.xcworkspace \
-            -scheme App \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath derived-data \
-            CODE_SIGNING_ALLOWED=NO
+          if [ -f ios/App/App.xcworkspace ]; then
+            xcodebuild -workspace ios/App/App.xcworkspace \
+              -scheme App \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath derived-data \
+              CODE_SIGNING_ALLOWED=NO
+          else
+            xcodebuild -project ios/App/App.xcodeproj \
+              -scheme App \
+              -configuration Debug \
+              -sdk iphonesimulator \
+              -destination 'generic/platform=iOS Simulator' \
+              -derivedDataPath derived-data \
+              CODE_SIGNING_ALLOWED=NO
+          fi
 
       - name: Build for generic iOS device (unsigned)
         # Device build, also unsigned — for inspection / re-signing in Xcode.
         run: |
-          xcodebuild -workspace ios/App/App.xcworkspace \
-            -scheme App \
-            -configuration Debug \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath derived-data \
-            CODE_SIGNING_ALLOWED=NO
+          if [ -f ios/App/App.xcworkspace ]; then
+            xcodebuild -workspace ios/App/App.xcworkspace \
+              -scheme App \
+              -configuration Debug \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath derived-data \
+              CODE_SIGNING_ALLOWED=NO
+          else
+            xcodebuild -project ios/App/App.xcodeproj \
+              -scheme App \
+              -configuration Debug \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath derived-data \
+              CODE_SIGNING_ALLOWED=NO
+          fi
 
       - name: Collect the built .app files
         run: |
