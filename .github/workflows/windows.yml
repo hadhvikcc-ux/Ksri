@@ -1,0 +1,44 @@
+name: Windows
+
+# Builds a downloadable Windows installer (.exe, NSIS) for Ksri with Electron.
+# Runs on windows-latest because electron-builder needs Windows to build a
+# Windows installer. The installer is unsigned (no code-signing certificate
+# is set up), so Windows SmartScreen may warn on first run — click
+# "More info" → "Run anyway". See docs/WINDOWS_IOS.md.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'www/**'
+      - 'electron/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build Windows installer
+        run: npx electron-builder --win
+        env:
+          # No code signing: the .exe is unsigned, SmartScreen may warn.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v5
+        with:
+          name: ksri-windows-installer
+          path: dist/*.exe
+          retention-days: 30
