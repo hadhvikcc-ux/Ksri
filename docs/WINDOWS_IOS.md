@@ -28,15 +28,20 @@ publishing.
 
 **iOS — run 45885971876:** failed in 2s with exit 66,
 `xcodebuild: error: 'ios/App/App.xcworkspace' does not exist.` The
-platform-generation step had reported success, but CocoaPods had
-never run, so no `.xcworkspace` was produced. Fixed: the workflow
-now lists `ios/App/` after sync, runs `pod install --repo-update`
-in `ios/App` (with a `pod install` retry), verifies the workspace
-exists before building — failing with a clear message if neither
-workspace nor project exists — and the `xcodebuild` steps fall back
-to `-project ios/App/App.xcodeproj` when there is no workspace.
-Still unsigned builds (`CODE_SIGNING_ALLOWED=NO`); the signing
-approach is unchanged.
+platform-generation step had reported success, but there is no
+`.xcworkspace` to find: **Capacitor 8 uses Swift Package Manager,
+not CocoaPods** — `cap add ios` generates `ios/App/App.xcodeproj`
+(a directory) and `ios/App/CapApp-SPM/Package.swift`, with no
+Podfile at all. The first fix (run `pod install`) was therefore
+wrong — it fails with "No Podfile found in the project directory",
+and the verify step that tested `App.xcodeproj` with `-f` also
+wrongly reported it missing, because it is a directory. The real
+fix: the workflow now builds with
+`xcodebuild -project ios/App/App.xcodeproj` (simulator and device)
+and verifies the project with `test -d ios/App/App.xcodeproj`,
+failing with a clear message only if it is really missing. Still
+unsigned builds (`CODE_SIGNING_ALLOWED=NO`); the signing approach
+is unchanged.
 
 ## Windows
 
@@ -107,7 +112,7 @@ What the CI build **does** produce (artifact **`ksri-ios-app`**):
 npm install
 npx cap add ios        # generates ios/ (not committed — see below)
 npm run ios:sync       # npx cap sync ios
-npx cap open ios       # opens ios/App/App.xcworkspace in Xcode
+npx cap open ios       # opens ios/App/App.xcodeproj in Xcode
 ```
 
 In Xcode, pick your team under Signing & Capabilities, pick your
@@ -120,12 +125,15 @@ account, which the CI workflow deliberately does not have.
 `.github/workflows/ios.yml` runs on `macos-latest`, sets up Node 24,
 runs `npm ci`, generates the iOS platform (`npx cap add ios` if
 `ios/` is missing) and syncs (`npx cap sync ios`), lists
-`ios/App/`, installs CocoaPods dependencies (`pod install` in
-`ios/App` — this is what creates `App.xcworkspace`), verifies the
-workspace exists, then builds with `xcodebuild` twice — once for the
-simulator and once for a generic iOS device, both with
+`ios/App/`, verifies `ios/App/App.xcodeproj` exists (it is a
+directory, so the check uses `-d`), then builds with `xcodebuild
+-project ios/App/App.xcodeproj` twice — once for the simulator and
+once for a generic iOS device, both with
 `CODE_SIGNING_ALLOWED=NO` (unsigned) — and uploads both `.app`
-bundles as `ksri-ios-app` (30-day retention).
+bundles as `ksri-ios-app` (30-day retention). Capacitor 8 uses
+Swift Package Manager, not CocoaPods: there is no Podfile and no
+workspace file, so the workflow has no pod-install step and never
+uses `-workspace`.
 
 ### Getting a signed iOS build (when you are ready)
 

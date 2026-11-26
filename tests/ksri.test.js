@@ -203,7 +203,7 @@ test('Windows (Electron) + iOS (Capacitor) installable', () => {
   assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /iOS/);
 });
 
-test('Windows + iOS CI fixes: no publish, CocoaPods workspace', () => {
+test('Windows + iOS CI fixes: no publish, SPM xcodeproj build', () => {
   // Windows run 45890547838: electron-builder tried to publish in CI
   // ("GitHub Personal Access Token is not set", GH_TOKEN) after the
   // .exe was already built. Fixed both ways, so it cannot recur.
@@ -213,25 +213,31 @@ test('Windows + iOS CI fixes: no publish, CocoaPods workspace', () => {
   assert.match(win, /CSC_IDENTITY_AUTO_DISCOVERY/);
   assert.match(win, /ksri-windows-installer/);
   assert.match(win, /actions\/upload-artifact@v5/);
-  // iOS run 45885971876: xcodebuild exit 66, App.xcworkspace missing
-  // because CocoaPods never ran. Fixed with pod install + a workspace
-  // check + a .xcodeproj fallback. Still unsigned.
+  // iOS run 45885971876: xcodebuild exit 66, App.xcworkspace missing.
+  // The first fix (pod install) was WRONG: Capacitor 8 uses Swift
+  // Package Manager, not CocoaPods — there is no Podfile and no
+  // .xcworkspace, so `pod install` fails with "No Podfile found".
+  // The real fix: build the plain .xcodeproj with -project, and check
+  // it with -d (it is a directory, not a file — -f wrongly reported it
+  // missing). Still unsigned.
   const ios = fs.readFileSync(path.join(root, '.github/workflows/ios.yml'), 'utf8');
-  assert.match(ios, /pod install/);
-  assert.match(ios, /pod install --repo-update/);
-  assert.match(ios, /ls -la ios\/App\//);
-  assert.match(ios, /test -f ios\/App\/App\.xcworkspace/);
+  assert.doesNotMatch(ios, /pod install/, 'ios.yml must not use pod install (no Podfile in Capacitor 8)');
+  assert.doesNotMatch(ios, /App\.xcworkspace/, 'ios.yml must not reference App.xcworkspace');
+  assert.doesNotMatch(ios, /CocoaPods/, 'ios.yml must not mention CocoaPods');
   assert.match(ios, /-project ios\/App\/App\.xcodeproj/);
+  assert.match(ios, /test -d ios\/App\/App\.xcodeproj/);
+  assert.match(ios, /Swift Package Manager/);
+  assert.match(ios, /ls -la ios\/App\//);
   assert.match(ios, /CODE_SIGNING_ALLOWED=NO/);
   assert.match(ios, /ksri-ios-app/);
-  // Docs record both fixes.
+  // Docs record both fixes, with the CocoaPods mistake corrected.
   const docs = fs.readFileSync(path.join(root, 'docs', 'WINDOWS_IOS.md'), 'utf8');
   assert.match(docs, /45890547838/);
   assert.match(docs, /GH_TOKEN/);
   assert.match(docs, /--publish=never/);
   assert.match(docs, /45885971876/);
-  assert.match(docs, /App\.xcworkspace/);
-  assert.match(docs, /pod install/);
+  assert.match(docs, /Swift Package Manager/);
+  assert.doesNotMatch(docs, /runs `pod install/, 'docs must not present pod install as the iOS fix');
 });
 
 test('CSS has dark mode + green brand', () => {
