@@ -1,0 +1,86 @@
+name: iOS
+
+# Builds Ksri for iOS with Capacitor on a macOS runner.
+#
+# HONEST LIMITATION — read before expecting an installable iPhone app:
+# a real iPhone install needs Apple Developer signing (a paid Apple
+# Developer account, a signing certificate + provisioning profile, and the
+# bundle ID com.hadhvik.ksri registered in App Store Connect). This
+# workflow has none of that, so it does NOT produce a signed .ipa you can
+# install on a phone or submit to the App Store. What it DOES produce:
+#   1. An unsigned .app built for a generic iOS device (installable only
+#      with your own signing, e.g. in Xcode), and
+#   2. A simulator build you can run in the iOS Simulator on a Mac.
+# Both are uploaded as the ksri-ios-app artifact. To get a signed build,
+# add your Apple signing secrets to the repo and add --sign / export
+# options to the xcodebuild steps (see docs/WINDOWS_IOS.md).
+#
+# The native ios/ platform is NOT committed (like android/) — this
+# workflow generates it on the runner with `npx cap add ios`, then syncs.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'www/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate iOS platform and sync web assets
+        run: |
+          if [ ! -d ios ]; then npx cap add ios; fi
+          npx cap sync ios
+
+      - name: List available simulators
+        run: xcrun simctl list devices available
+
+      - name: Build for iOS Simulator
+        # Simulator build needs no signing and proves the app compiles.
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath derived-data \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build for generic iOS device (unsigned)
+        # Device build, also unsigned — for inspection / re-signing in Xcode.
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath derived-data \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Collect the built .app files
+        run: |
+          mkdir -p ios-build
+          cp -R derived-data/Build/Products/Debug-iphonesimulator/App.app ios-build/Ksri-simulator.app
+          cp -R derived-data/Build/Products/Debug-iphoneos/App.app ios-build/Ksri-device.app
+          ls -la ios-build/ ios-build/Ksri-simulator.app ios-build/Ksri-device.app
+
+      - name: Upload iOS app
+        uses: actions/upload-artifact@v5
+        with:
+          name: ksri-ios-app
+          path: ios-build/
+          retention-days: 30
