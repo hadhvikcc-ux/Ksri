@@ -1,0 +1,63 @@
+name: Android
+
+# Builds a downloadable debug APK on GitHub Actions.
+# The APK is NOT built locally (no Java / Android SDK on dev machines).
+# The native android/ platform is NOT committed to the repo (it contains
+# binary PNG/JAR assets that cannot be pushed via the GitHub App) — this
+# workflow generates it on the runner with `npx cap add android`, then syncs.
+# NOTE: do NOT use android-actions/setup-android — v3 targets Node 20, which
+# GitHub removed from Actions runners in Sep 2026, so that step fails.
+# ubuntu-latest runners already ship an Android SDK (ANDROID_HOME is set),
+# so Gradle finds it without any setup-android step.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'www/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Android platform and sync web assets
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+
+      - name: Check preinstalled Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls "$ANDROID_HOME" || ls /usr/local/lib/android/sdk
+          chmod +x android/gradlew
+
+      - name: Build debug APK
+        # gradlew lives in android/, not at the repo root — ./gradlew fails with 127
+        run: ./android/gradlew -p android assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: ksri-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
