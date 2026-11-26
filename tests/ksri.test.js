@@ -203,6 +203,37 @@ test('Windows (Electron) + iOS (Capacitor) installable', () => {
   assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /iOS/);
 });
 
+test('Windows + iOS CI fixes: no publish, CocoaPods workspace', () => {
+  // Windows run 45890547838: electron-builder tried to publish in CI
+  // ("GitHub Personal Access Token is not set", GH_TOKEN) after the
+  // .exe was already built. Fixed both ways, so it cannot recur.
+  assert.strictEqual(pkg.build.publish, null, 'package.json build.publish must be null');
+  const win = fs.readFileSync(path.join(root, '.github/workflows/windows.yml'), 'utf8');
+  assert.match(win, /electron-builder --win --publish=never/);
+  assert.match(win, /CSC_IDENTITY_AUTO_DISCOVERY/);
+  assert.match(win, /ksri-windows-installer/);
+  assert.match(win, /actions\/upload-artifact@v5/);
+  // iOS run 45885971876: xcodebuild exit 66, App.xcworkspace missing
+  // because CocoaPods never ran. Fixed with pod install + a workspace
+  // check + a .xcodeproj fallback. Still unsigned.
+  const ios = fs.readFileSync(path.join(root, '.github/workflows/ios.yml'), 'utf8');
+  assert.match(ios, /pod install/);
+  assert.match(ios, /pod install --repo-update/);
+  assert.match(ios, /ls -la ios\/App\//);
+  assert.match(ios, /test -f ios\/App\/App\.xcworkspace/);
+  assert.match(ios, /-project ios\/App\/App\.xcodeproj/);
+  assert.match(ios, /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(ios, /ksri-ios-app/);
+  // Docs record both fixes.
+  const docs = fs.readFileSync(path.join(root, 'docs', 'WINDOWS_IOS.md'), 'utf8');
+  assert.match(docs, /45890547838/);
+  assert.match(docs, /GH_TOKEN/);
+  assert.match(docs, /--publish=never/);
+  assert.match(docs, /45885971876/);
+  assert.match(docs, /App\.xcworkspace/);
+  assert.match(docs, /pod install/);
+});
+
 test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');

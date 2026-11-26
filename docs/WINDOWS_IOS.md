@@ -13,6 +13,31 @@ Your chats, notes, calendar and settings live in `localStorage`
 (key `ksri_v1`) on each device. They do **not** sync between devices
 yet — there is no server or account sync in this demo build.
 
+## Fixed — 2026-11-27
+
+**Windows — run 45890547838:** the `.exe` was built successfully
+(`dist\Ksri-Setup-1.0.0.exe`, NSIS), but the job then failed at the
+end of `npx electron-builder --win` with *"GitHub Personal Access
+Token is not set, neither programmatically, nor using env GH_TOKEN"* —
+electron-builder 26 implicitly tries to publish in CI. Fixed both
+ways so it cannot recur: `"publish": null` in the electron-builder
+`build` config in `package.json`, and the workflow now runs
+`npx electron-builder --win --publish=never`. The installer is still
+distributed via the `ksri-windows-installer` artifact upload, not via
+publishing.
+
+**iOS — run 45885971876:** failed in 2s with exit 66,
+`xcodebuild: error: 'ios/App/App.xcworkspace' does not exist.` The
+platform-generation step had reported success, but CocoaPods had
+never run, so no `.xcworkspace` was produced. Fixed: the workflow
+now lists `ios/App/` after sync, runs `pod install --repo-update`
+in `ios/App` (with a `pod install` retry), verifies the workspace
+exists before building — failing with a clear message if neither
+workspace nor project exists — and the `xcodebuild` steps fall back
+to `-project ios/App/App.xcodeproj` when there is no workspace.
+Still unsigned builds (`CODE_SIGNING_ALLOWED=NO`); the signing
+approach is unchanged.
+
 ## Windows
 
 ### Install from GitHub Actions (easiest)
@@ -42,7 +67,9 @@ NSIS target, appId `com.hadhvik.ksri`). `electron/main.js` loads
 
 `.github/workflows/windows.yml` runs on `windows-latest`, sets up
 Node 24 (`actions/setup-node@v5`), runs `npm ci`, then
-`npx electron-builder --win`, and uploads `dist/*.exe` as the
+`npx electron-builder --win --publish=never` (never publishes — see
+the Fixed note above; the `GH_TOKEN` error otherwise fails the job
+after the `.exe` is built), and uploads `dist/*.exe` as the
 `ksri-windows-installer` artifact (30-day retention). It runs on pushes
 to `main` that touch `www/**`, `electron/**`, `package.json` /
 `package-lock.json`, or manually (Actions → Windows → Run workflow).
@@ -92,10 +119,13 @@ account, which the CI workflow deliberately does not have.
 
 `.github/workflows/ios.yml` runs on `macos-latest`, sets up Node 24,
 runs `npm ci`, generates the iOS platform (`npx cap add ios` if
-`ios/` is missing) and syncs (`npx cap sync ios`), then builds with
-`xcodebuild` twice — once for the simulator and once for a generic
-iOS device, both with `CODE_SIGNING_ALLOWED=NO` (unsigned) — and
-uploads both `.app` bundles as `ksri-ios-app` (30-day retention).
+`ios/` is missing) and syncs (`npx cap sync ios`), lists
+`ios/App/`, installs CocoaPods dependencies (`pod install` in
+`ios/App` — this is what creates `App.xcworkspace`), verifies the
+workspace exists, then builds with `xcodebuild` twice — once for the
+simulator and once for a generic iOS device, both with
+`CODE_SIGNING_ALLOWED=NO` (unsigned) — and uploads both `.app`
+bundles as `ksri-ios-app` (30-day retention).
 
 ### Getting a signed iOS build (when you are ready)
 
