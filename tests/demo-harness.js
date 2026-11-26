@@ -72,6 +72,19 @@ function run(file) {
   vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), ctx, { filename: file });
 }
 run('www/firebase-config.js');
+// This harness tests DEMO mode, so force the placeholder config even
+// though the committed config is now the real ksri-8974b project — the
+// harness must not try to reach Firebase. Real mode is covered by
+// tests/real-harness.js with its own fake backend.
+ctx.KSRI_FIREBASE_CONFIG = {
+  apiKey: 'PASTE_YOUR_API_KEY_HERE',
+  authDomain: 'PASTE_YOUR_PROJECT_ID.firebaseapp.com',
+  projectId: 'PASTE_YOUR_PROJECT_ID',
+  storageBucket: 'PASTE_YOUR_PROJECT_ID.appspot.com',
+  messagingSenderId: 'PASTE_YOUR_SENDER_ID',
+  appId: 'PASTE_YOUR_APP_ID'
+};
+ctx.KSRI_FIREBASE_CONFIGURED = false;
 run('www/firebase.js');
 run('www/app.js');
 

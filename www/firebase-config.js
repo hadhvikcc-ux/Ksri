@@ -15,18 +15,20 @@
  * data is firestore.rules (only chat participants can read/write) plus
  * Firebase Auth. Never paste a private/service-account key here.
  *
- * This file IS committed (with placeholders only). Real keys live only
- * in your local copy / your Firebase project.
+ * CONFIGURED 2026-11-27: real values from the Ksri Firebase project
+ * (ksri-8974b, Spark plan, asia-south1). Phone + Email/Password + Email
+ * link sign-in enabled; Firestore in production mode.
  */
 'use strict';
 
 window.KSRI_FIREBASE_CONFIG = {
-  apiKey: 'PASTE_YOUR_API_KEY_HERE',
-  authDomain: 'PASTE_YOUR_PROJECT_ID.firebaseapp.com',
-  projectId: 'PASTE_YOUR_PROJECT_ID',
-  storageBucket: 'PASTE_YOUR_PROJECT_ID.appspot.com',
-  messagingSenderId: 'PASTE_YOUR_SENDER_ID',
-  appId: 'PASTE_YOUR_APP_ID'
+  apiKey: 'AIzaSyBAAlDGdcdbNxp8U_CiWF6Abt4_M0F5Juw',
+  authDomain: 'ksri-8974b.firebaseapp.com',
+  projectId: 'ksri-8974b',
+  storageBucket: 'ksri-8974b.firebasestorage.app',
+  messagingSenderId: '667783926200',
+  appId: '1:667783926200:web:cdbccfcbb15b5c0cf63f4d',
+  measurementId: 'G-H0E6WHCW4D'
 };
 
 /* True only when every value above has been replaced with a real one.

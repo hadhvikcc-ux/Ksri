@@ -240,16 +240,23 @@ test('Windows + iOS CI fixes: no publish, SPM xcodeproj build', () => {
   assert.doesNotMatch(docs, /runs `pod install/, 'docs must not present pod install as the iOS fix');
 });
 
-test('Firebase real mode: config placeholder + SDK module', () => {
-  // Placeholder config must exist and be inert (no real keys committed).
+test('Firebase real mode: config + SDK module', () => {
+  // Config must be either the inert placeholder OR the real Ksri project
+  // (ksri-8974b, configured 2026-11-27). A web apiKey is a public client
+  // identifier, not a secret — committing it is intended once configured.
   const cfgPath = path.join(root, 'www', 'firebase-config.js');
   assert.ok(fs.existsSync(cfgPath), 'www/firebase-config.js should exist');
   const cfg = fs.readFileSync(cfgPath, 'utf8');
-  assert.match(cfg, /PASTE_YOUR_API_KEY_HERE/);
-  assert.match(cfg, /PASTE_YOUR_PROJECT_ID/);
   assert.match(cfg, /KSRI_FIREBASE_CONFIGURED/);
   assert.match(cfg, /window\.KSRI_FIREBASE_CONFIG/);
-  assert.doesNotMatch(cfg, /AIza[0-9A-Za-z_-]{20,}/, 'no real Firebase apiKey may be committed');
+  const isPlaceholder = /PASTE_YOUR_API_KEY_HERE/.test(cfg);
+  if (isPlaceholder) {
+    assert.match(cfg, /PASTE_YOUR_PROJECT_ID/);
+  } else {
+    assert.match(cfg, /projectId: 'ksri-8974b'/);
+    assert.match(cfg, /authDomain: 'ksri-8974b\.firebaseapp\.com'/);
+    assert.match(cfg, /AIza[0-9A-Za-z_-]{20,}/, 'configured apiKey present');
+  }
   // firebase.js: CDN modular SDK, no bundler, real auth + Firestore APIs.
   const fbPath = path.join(root, 'www', 'firebase.js');
   assert.ok(fs.existsSync(fbPath), 'www/firebase.js should exist');
