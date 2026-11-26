@@ -149,6 +149,60 @@ test('fixed demo OTP 123456, Send OTP always advances, demo bypass', () => {
   assert.match(css, /\.info-note/);
 });
 
+test('Windows (Electron) + iOS (Capacitor) installable', () => {
+  // Electron wrapper
+  assert.ok(fs.existsSync(path.join(root, 'electron', 'main.js')), 'electron/main.js should exist');
+  const mainJs = fs.readFileSync(path.join(root, 'electron', 'main.js'), 'utf8');
+  assert.match(mainJs, /BrowserWindow/);
+  assert.match(mainJs, /loadFile/);
+  assert.match(mainJs, /www.*index\.html/);
+  assert.match(mainJs, /title: 'Ksri'/);
+  assert.equal(pkg.main, 'electron/main.js');
+  assert.ok(pkg.scripts['windows:dev'], 'windows:dev script');
+  assert.ok(pkg.scripts['windows:build'], 'windows:build script');
+  assert.match(pkg.scripts['windows:build'], /electron-builder --win/);
+  assert.ok(pkg.devDependencies.electron, 'electron devDependency');
+  assert.ok(pkg.devDependencies['electron-builder'], 'electron-builder devDependency');
+  assert.equal(pkg.build.appId, 'com.hadhvik.ksri');
+  assert.equal(pkg.build.productName, 'Ksri');
+  assert.match(pkg.build.win.target, /nsis/i);
+  // iOS via Capacitor
+  assert.match(pkg.dependencies['@capacitor/ios'], /8\.6\.3/);
+  assert.ok(pkg.scripts['ios:sync'], 'ios:sync script');
+  const gitignore = fs.readFileSync(path.join(root, '.gitignore'), 'utf8');
+  assert.match(gitignore, /^ios\/$/m, 'ios/ must be gitignored (generated on CI, like android/)');
+  assert.match(gitignore, /^android\/$/m);
+  // Workflows: correct runners, Node 24, v5 actions, artifact names
+  const win = fs.readFileSync(path.join(root, '.github/workflows/windows.yml'), 'utf8');
+  assert.match(win, /runs-on: windows-latest/);
+  assert.match(win, /node-version: '24'/);
+  assert.match(win, /actions\/checkout@v5/);
+  assert.match(win, /actions\/setup-node@v5/);
+  assert.match(win, /actions\/upload-artifact@v5/);
+  assert.match(win, /electron-builder --win/);
+  assert.match(win, /ksri-windows-installer/);
+  const ios = fs.readFileSync(path.join(root, '.github/workflows/ios.yml'), 'utf8');
+  assert.match(ios, /runs-on: macos-latest/);
+  assert.match(ios, /node-version: '24'/);
+  assert.match(ios, /actions\/checkout@v5/);
+  assert.match(ios, /actions\/setup-node@v5/);
+  assert.match(ios, /actions\/upload-artifact@v5/);
+  assert.match(ios, /npx cap add ios/);
+  assert.match(ios, /npx cap sync ios/);
+  assert.match(ios, /xcodebuild/);
+  assert.match(ios, /CODE_SIGNING_ALLOWED=NO/);
+  assert.match(ios, /ksri-ios-app/);
+  assert.match(ios, /Apple Developer signing/);
+  // Docs cover both platforms + the signing caveat
+  const docs = fs.readFileSync(path.join(root, 'docs', 'WINDOWS_IOS.md'), 'utf8');
+  assert.match(docs, /ksri-windows-installer/);
+  assert.match(docs, /ksri-ios-app/);
+  assert.match(docs, /SmartScreen/);
+  assert.match(docs, /TestFlight/);
+  assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /Windows/);
+  assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /iOS/);
+});
+
 test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');

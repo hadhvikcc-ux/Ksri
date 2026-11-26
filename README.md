@@ -1,12 +1,13 @@
 # Ksri
 
-**Ksri** is a WhatsApp-style messenger for Android — with one big difference:
+**Ksri** is a WhatsApp-style messenger for Android, Windows and iOS — with one big difference:
 you can register with a **phone number OR an email address**. And it goes
 beyond WhatsApp with scheduled messages, an AI assistant, translation, polls,
 chat lock, channels and more.
 
-Built with [Capacitor 8](https://capacitorjs.com/): a native Android shell
-that loads a standalone, **offline** web app from `www/`. No server, no
+Built with [Capacitor 8](https://capacitorjs.com/): a native Android / iOS shell
+that loads a standalone, **offline** web app from `www/`. On Windows the same
+app runs in an [Electron](https://www.electronjs.org/) window. No server, no
 network — all data lives on the device in `localStorage` (key `ksri_v1`).
 
 - App ID: `com.hadhvik.ksri`
@@ -84,11 +85,50 @@ npm test          # checks www files exist and key features are present
 npm run android:sync   # after: npx cap add android (CI does this)
 ```
 
+## Windows
+
+Ksri runs on Windows as a desktop app (Electron, same offline `www/` app).
+See [`docs/WINDOWS_IOS.md`](docs/WINDOWS_IOS.md).
+
+```bash
+npm install
+npm run windows:dev    # open Ksri in a desktop window for testing
+npm run windows:build  # build dist/Ksri-Setup-1.0.0.exe (NSIS installer)
+```
+
+The installer is built on GitHub Actions too (`.github/workflows/windows.yml`,
+`windows-latest`): download the **`ksri-windows-installer`** artifact from
+the latest Windows run. It is **unsigned**, so Windows SmartScreen may warn
+on first run — click More info → Run anyway.
+
+## iOS
+
+Ksri runs on iOS via Capacitor (same offline `www/` app). See
+[`docs/WINDOWS_IOS.md`](docs/WINDOWS_IOS.md) — **read the signing note first.**
+
+```bash
+npm install
+npx cap add ios        # generates ios/ (CI does this; never committed)
+npm run ios:sync       # npx cap sync ios
+npx cap open ios       # opens the project in Xcode (Mac only)
+```
+
+The iOS workflow (`.github/workflows/ios.yml`, `macos-latest`) builds an
+**unsigned** `.app` and uploads it as **`ksri-ios-app`** (a simulator build
+you can run on a Mac, plus an unsigned device build). It is **not** a signed
+`.ipa` — installing on a real iPhone needs Apple Developer signing (paid
+account, certificate + provisioning profile), which is not set up here.
+Open the generated project in Xcode with your own Apple ID to get a
+signed, installable build, or use TestFlight when you are ready.
+
 ## Project layout
 
 ```
 capacitor.config.json   App ID com.hadhvik.ksri, webDir www
-package.json            Capacitor 8.6.3, scripts: test, android:sync
+package.json            Capacitor 8.6.3, Electron, scripts: test,
+                        android:sync, ios:sync, windows:dev, windows:build
+electron/
+  main.js               Windows desktop entry point (loads www/index.html)
 www/
   index.html            App shell (auth, tabs, chat view, overlays)
   styles.css            WhatsApp-green theme, light + dark
@@ -97,7 +137,10 @@ tests/ksri.test.js      Node test: files exist + feature strings present
 .github/workflows/
   ci.yml                Node 24, npm ci, npm test
   android.yml           JDK 21, v5 actions, builds the debug APK
+  windows.yml           windows-latest, electron-builder --win, .exe installer
+  ios.yml               macos-latest, xcodebuild, unsigned .app (see docs)
 docs/ANDROID.md         How the Android build works
+docs/WINDOWS_IOS.md     How the Windows + iOS builds work (incl. signing)
 ```
 
 ## Notes / limitations (demo)
