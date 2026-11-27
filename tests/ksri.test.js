@@ -349,6 +349,39 @@ test('Real mode wiring in index.html + CSS', () => {
   assert.match(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), /Real mode \(Firebase\)/);
 });
 
+test('real auth fixes: normalizePhone, real resend, returning user skips profile', () => {
+  // BUG 1 — bare 10-digit numbers must get +91 before Firebase sees them.
+  assert.match(appJs, /function normalizePhone\(v\)/);
+  assert.match(appJs, /digits\.length === 10\) return '\+91' \+ digits/);
+  assert.match(appJs, /digits\.length === 11 && digits\.charAt\(0\) === '0'\) return '\+91' \+ digits\.slice\(1\)/);
+  assert.match(appJs, /digits\.length === 12 && digits\.indexOf\('91'\) === 0\) return '\+' \+ digits/);
+  const sendOtpFn = appJs.slice(appJs.indexOf('function sendOtp()'), appJs.indexOf('function resendOtp()'));
+  assert.match(sendOtpFn, /normalizePhone\(v\)/, 'sendOtp must normalise the typed number');
+  assert.doesNotMatch(sendOtpFn, /pendingValue = '\+' \+ digits/, 'sendOtp must not build a bare +digits number');
+  assert.match(sendOtpFn, /Added the India code \+91/, 'OTP note shows the normalised number');
+  // Real resend actually re-sends the SMS; demo resend keeps the old text.
+  const resendFn = appJs.slice(appJs.indexOf('function resendOtp()'), appJs.indexOf('function backToMethod()'));
+  assert.match(resendFn, /sendPhoneCode\(pendingValue\)/, 'real resend must call sendPhoneCode');
+  assert.match(resendFn, /Demo OTP is still 123456/);
+  // User search normalises too (stored phones are +91…).
+  const searchFn = appJs.slice(appJs.indexOf('function searchRealUser()'), appJs.indexOf('function startRealChatWith('));
+  assert.match(searchFn, /normalizePhone\(v\)/);
+  // BUG 2 — returning users skip profile setup on BOTH sign-in paths.
+  assert.match(appJs, /function enterAfterSignIn\(\)/);
+  assert.match(appJs, /getUserProfile\(fbUser\.uid\)\.then\(function \(p\) \{/);
+  const verifyFn = appJs.slice(appJs.indexOf('function verifyOtp()'), appJs.indexOf('function cycleAvatarColor()'));
+  // Only the real-mode branch (up to the demo fallback comment).
+  const realConfirm = verifyFn.slice(verifyFn.indexOf('confirmPhoneCode(v)'), verifyFn.indexOf('/* Accept the fixed demo code'));
+  assert.match(realConfirm, /enterAfterSignIn\(\)/, 'phone confirm must go through enterAfterSignIn');
+  assert.doesNotMatch(realConfirm, /showStep\('step-profile'\)/, 'phone confirm must not jump to profile setup');
+  const emailFn = appJs.slice(appJs.indexOf('function signInEmailPasswordFlow()'), appJs.indexOf('/* ---------- REAL CHATS'));
+  assert.match(emailFn, /enterAfterSignIn\(\)/);
+  assert.doesNotMatch(emailFn, /showStep\('step-profile'\)/, 'email sign-in must not jump to profile setup');
+  // finishRegistration (new-user profile creation) still exists unchanged.
+  assert.match(appJs, /function finishRegistration\(\)/);
+  assert.match(appJs, /upsertUserProfile\(\{/);
+});
+
 test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');

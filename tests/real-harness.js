@@ -95,12 +95,17 @@ ctx.KsriFirebase = {
   sendEmailLink: (email) => { calls.push(['sendEmailLink', email]); return Promise.resolve(); },
   isEmailLink: () => false,
   completeEmailLink: () => Promise.resolve(fakeUser),
-  createEmailAccount: (e, p) => { ctx.KsriFirebase.user = { uid: 'u1', email: e }; return Promise.resolve(ctx.KsriFirebase.user); },
-  signInEmailPassword: (e, p) => { calls.push(['signInEmailPassword', e]); return Promise.reject({ code: 'auth/user-not-found', message: 'no user' }); },
+  createEmailAccount: (e, p) => { ctx.KsriFirebase.user = { uid: e === 'new@ksri.app' ? 'u9' : 'u1', email: e }; return Promise.resolve(ctx.KsriFirebase.user); },
+  signInEmailPassword: (e, p) => {
+    // Only the returning user can sign in; anyone else is "no account".
+    if (e === 'returning@ksri.app') { ctx.KsriFirebase.user = { uid: 'u1', email: e }; calls.push(['signInEmailPassword', e]); return Promise.resolve(ctx.KsriFirebase.user); }
+    calls.push(['signInEmailPassword', e]); return Promise.reject({ code: 'auth/user-not-found', message: 'no user' });
+  },
   signOut: () => { calls.push(['signOut']); ctx.KsriFirebase.user = null; return Promise.resolve(); },
   upsertUserProfile: (p) => { calls.push(['upsertUserProfile', p.displayName]); return Promise.resolve(); },
   getUserProfile: (uid) => Promise.resolve(uid === 'u2'
     ? { uid: 'u2', displayName: 'Friend', phone: '+918888888888', email: '', avatarColor: '#29B6F6', bio: 'hi' }
+    : uid === 'u9' ? null // brand-new user: no Firestore profile yet
     : { uid: 'u1', displayName: 'Test User', phone: '+919999999999', email: '', avatarColor: '#25D366', bio: 'Real user' }),
   updateLastSeen: () => {},
   findUserByContact: (v) => Promise.resolve(v === '+918888888888'
@@ -139,19 +144,34 @@ run('www/app.js');
   check('not signed in -> auth screen shown', !els['auth-screen']._cls.has('hidden'));
   check('demo OTP boxes hidden in real mode', els['demo-otp'] ? els['demo-otp']._cls.has('hidden') : true);
 
-  // Real phone sign-up: send SMS code.
-  ctx.document.getElementById('id-input').value = '+919999999999';
+  // normalizePhone: bare 10-digit Indian numbers get +91 before Firebase.
+  check('normalizePhone 10 digits -> +91', ctx.normalizePhone('9876543210') === '+919876543210');
+  check('normalizePhone 91-prefixed 12 digits', ctx.normalizePhone('919876543210') === '+919876543210');
+  check('normalizePhone +91 with spaces unchanged', ctx.normalizePhone('+91 98765 43210') === '+919876543210');
+  check('normalizePhone 0-prefixed 11 digits', ctx.normalizePhone('09876543210') === '+919876543210');
+  check('normalizePhone empty -> empty', ctx.normalizePhone('') === '');
+
+  // Real phone sign-up: bare 10-digit number must be sent as +91…
+  ctx.document.getElementById('id-input').value = '9999999999';
   ctx.sendOtp();
   await sleep(10);
-  check('sendOtp called real sendPhoneCode', calls.some((c) => c[0] === 'sendPhoneCode' && c[1] === '+919999999999'));
+  check('sendOtp normalised bare number to +91', calls.some((c) => c[0] === 'sendPhoneCode' && c[1] === '+919999999999'));
+  check('OTP target shows normalised number', els['otp-target'].textContent === '+919999999999');
   check('sendOtp advanced to OTP step (real)', !els['step-otp']._cls.has('hidden'));
   check('OTP note mentions real SMS', (els['otp-note'].textContent || '').indexOf('Real SMS') !== -1);
+  // Resend in real mode re-sends a real SMS (not the demo code).
+  ctx.resendOtp();
+  await sleep(10);
+  check('resendOtp re-sent real SMS', calls.filter((c) => c[0] === 'sendPhoneCode' && c[1] === '+919999999999').length >= 2);
   // Verify the SMS code.
   els['otp-input'].value = '123456';
   ctx.verifyOtp();
   await sleep(10);
   check('verifyOtp called confirmPhoneCode', calls.some((c) => c[0] === 'confirmPhoneCode' && c[1] === '123456'));
-  check('verifyOtp advanced to profile step (real)', !els['step-profile']._cls.has('hidden'));
+  // Returning user (Firestore profile exists for u1) goes straight in —
+  // NO profile setup screen after sign-in.
+  check('returning phone user enters app directly', !els['app-screen']._cls.has('hidden'));
+  check('returning phone user skips profile step', els['step-profile']._cls.has('hidden'));
   // Finish registration -> Firestore profile upsert.
   ctx.document.getElementById('profile-name').value = 'Test User';
   ctx.document.getElementById('profile-bio').value = 'Real user';
@@ -195,6 +215,29 @@ run('www/app.js');
   ctx.logout();
   check('logout called Firebase signOut', calls.some((c) => c[0] === 'signOut'));
   check('realMode false after logout', ctx.realMode === false);
+
+  // Email: RETURNING user signs in with password -> straight into the
+  // app, no "create account" / profile screen again.
+  ctx.document.getElementById('id-input').value = 'returning@ksri.app';
+  ctx.document.getElementById('email-password').value = 'secret123';
+  ctx.signInEmailPasswordFlow();
+  await sleep(10);
+  check('email sign-in called signInEmailPassword', calls.some((c) => c[0] === 'signInEmailPassword' && c[1] === 'returning@ksri.app'));
+  check('returning email user enters app directly', !els['app-screen']._cls.has('hidden'));
+  check('returning email user skips profile step', els['step-profile']._cls.has('hidden'));
+
+  // Email: NEW user (no profile yet) -> profile setup, as before.
+  ctx.logout();
+  ctx.document.getElementById('id-input').value = 'new@ksri.app';
+  ctx.document.getElementById('email-password').value = 'secret123';
+  ctx.signInEmailPasswordFlow();
+  await sleep(10);
+  check('new email user sees profile setup', !els['step-profile']._cls.has('hidden'));
+  ctx.document.getElementById('profile-name').value = 'New User';
+  ctx.finishRegistration();
+  await sleep(10);
+  check('new user upserted profile', calls.some((c) => c[0] === 'upsertUserProfile' && c[1] === 'New User'));
+  check('new user enters app after setup', !els['app-screen']._cls.has('hidden'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

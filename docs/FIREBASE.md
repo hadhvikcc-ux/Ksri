@@ -94,6 +94,13 @@ The config is part of the app files, so rebuild after Step 5:
 1. **Phone A:** open Ksri, choose **Phone**, enter your real number,
    tap **Send OTP**. A real SMS arrives — enter the code, set your
    name, and you are in. The badge says "Real mode".
+   **Typing the number:** just type your 10-digit number (e.g.
+   `98765 43210`) — the app adds `+91` for you. Or type the full
+   number with the country code (`+91 98765 43210`). Both work.
+   **Signing in again later:** if you already have a Ksri profile,
+   you go straight into your chats — profile setup is only the very
+   first time. (If an SMS does not arrive, tap **Resend** — it sends
+   a fresh real SMS. Do not use 123456 in real mode; that is demo only.)
 2. **Phone B:** do the same with a *different* number (or an email
    account). **Important:** each phone needs its own account — two
    phones signed in as the same account cannot message each other.
@@ -135,6 +142,10 @@ Note the exact wording — it tells you what to fix.
   does not send email OTP codes. The app never fakes one.
 - **Email-link sign-in** opens the link in a browser, so it works best
   in the browser / Windows build. On Android, prefer email + password.
+- **Returning users go straight in.** After logout, signing in again
+  (phone SMS or email + password) takes you directly to your chats —
+  profile setup (name/bio) is first-time only. Your account and chats
+  live in Firebase, so they come back on any device.
 - **Photos / voice notes in real chats** are stored inside the message
   (Firestore limit ~1 MB per message), so very large photos are
   refused with a message. Full media uploads (Firebase Storage) are a

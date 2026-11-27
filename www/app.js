@@ -208,6 +208,19 @@ function showStep(id) {
   var a = $('demo-otp'); if (a) a.textContent = DEMO_OTP;
   var b = $('demo-otp-signup'); if (b) b.textContent = DEMO_OTP;
 }
+function normalizePhone(v) {
+  /* Turn anything the user types into a valid E.164 number for Firebase.
+     Firebase rejects a bare 10-digit number ('+9876543210' has no country
+     code) so no SMS is ever sent — that was the "OTP has not sent" bug.
+     Indian numbers: bare 10 digits -> +91 added; 0-prefixed 11 digits ->
+     drop the 0, then +91; 12 digits starting with 91 -> +91... */
+  var digits = String(v || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 10) return '+91' + digits;
+  if (digits.length === 11 && digits.charAt(0) === '0') return '+91' + digits.slice(1);
+  if (digits.length === 12 && digits.indexOf('91') === 0) return '+' + digits;
+  return '+' + digits;
+}
 function sendOtp() {
   /* BULLETPROOF: this function must ALWAYS advance to the OTP screen.
      No early `return` before showStep('step-otp') is allowed — that was
@@ -230,7 +243,7 @@ function sendOtp() {
     } else if (pendingMethod === 'email') {
       var digitsOnly = v.replace(/\D/g, '');
       if (digitsOnly.length >= 10 && v.indexOf('.') === -1) {
-        pendingMethod = 'phone'; pendingValue = '+' + digitsOnly;
+        pendingMethod = 'phone'; pendingValue = normalizePhone(v);
         note = 'That looks like a phone number, so we switched to Phone.';
       } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
         pendingValue = DEMO_EMAIL;
@@ -241,7 +254,10 @@ function sendOtp() {
       if (digits.length < 10) {
         pendingValue = DEMO_PHONE;
         note = 'That number is too short (' + digits.length + ' digits, need 10) — using demo number ' + DEMO_PHONE + ' so you can continue.';
-      } else { pendingValue = '+' + digits; }
+      } else {
+        pendingValue = normalizePhone(v);
+        if (digits.length === 10) note = 'Added the India code +91 — sending to ' + pendingValue + '.';
+      }
     }
     if (err) { err.textContent = ''; err.classList.add('hidden'); }
   } catch (e) {
@@ -284,7 +300,25 @@ function sendOtp() {
   toast((firebaseReady && pendingMethod === 'phone') ? 'Sending SMS code…' : 'Demo OTP is 123456');
 }
 function resendOtp() {
-  /* Fixed code: resending does not change it. */
+  /* REAL MODE: actually re-send a real SMS to the same number. (It used
+     to just say the demo code again, so a failed first send could never
+     be retried.) Demo mode keeps the old behaviour — fixed code. */
+  if (firebaseReady && pendingMethod === 'phone' && window.KsriFirebase && pendingValue) {
+    realOtpPending = true;
+    var n0 = $('otp-note');
+    if (n0) { n0.textContent = 'Sending a real SMS code to ' + pendingValue + '…'; n0.classList.remove('hidden'); }
+    window.KsriFirebase.sendPhoneCode(pendingValue).then(function () {
+      var n2 = $('otp-note');
+      if (n2) { n2.textContent = 'Real SMS code sent to ' + pendingValue + '. Enter the 6-digit code from the SMS.'; n2.classList.remove('hidden'); }
+      toast('SMS code sent — check your phone');
+    }).catch(function (err) {
+      realOtpPending = false;
+      var n2 = $('otp-note');
+      if (n2) { n2.textContent = 'Could not send the SMS: ' + window.KsriFirebase.friendlyAuthError(err); n2.classList.remove('hidden'); }
+      toast('SMS failed — see the note above');
+    });
+    return;
+  }
   pendingOtp = DEMO_OTP;
   var d = $('demo-otp'); if (d) d.textContent = DEMO_OTP;
   toast('Demo OTP is still 123456');
@@ -304,7 +338,7 @@ function continueDemoAccount() {
      or a demo value, then goes straight to profile setup. */
   var v = ($('id-input') && $('id-input').value || '').trim();
   if (!pendingValue) {
-    if (v) pendingValue = v.indexOf('@') !== -1 ? v.toLowerCase() : '+' + v.replace(/\D/g, '');
+    if (v) pendingValue = v.indexOf('@') !== -1 ? v.toLowerCase() : normalizePhone(v);
     else pendingValue = pendingMethod === 'phone' ? DEMO_PHONE : DEMO_EMAIL;
   }
   pendingOtp = DEMO_OTP;
@@ -314,6 +348,37 @@ function continueDemoAccount() {
   toast('Demo account — no OTP needed');
 }
 function skipOtp() { continueDemoAccount(); }
+function enterAfterSignIn() {
+  /* After a successful sign-in: RETURNING users (a Firestore profile
+     already exists for this uid) go straight into the app — they must
+     NOT see profile setup again. Only FIRST-TIME users (no profile yet)
+     see the profile screen. This was the "email login always asks for
+     creating account after logout" bug: both sign-in paths used to go
+     to step-profile unconditionally. */
+  var fbUser = window.KsriFirebase && window.KsriFirebase.user;
+  if (!fbUser) { showStep('step-method'); return; }
+  window.KsriFirebase.getUserProfile(fbUser.uid).then(function (p) {
+    if (p) {
+      state.user = {
+        name: p.displayName || 'Ksri user', bio: p.bio || '',
+        color: p.avatarColor || '#25D366',
+        method: p.phone ? 'phone' : 'email', value: p.phone || p.email || '',
+        uid: fbUser.uid, joinedAt: (state.user && state.user.joinedAt) || Date.now()
+      };
+      save();
+      enterApp();
+      toast('Welcome back, ' + state.user.name + '!');
+    } else {
+      showStep('step-profile');
+      var n = $('profile-name'); if (n) n.focus();
+    }
+  }).catch(function () {
+    /* Profile lookup failed (e.g. offline) — go in if we already have
+       this user locally, otherwise fall back to profile setup. */
+    if (state.user && state.user.uid === fbUser.uid) enterApp();
+    else showStep('step-profile');
+  });
+}
 function verifyOtp() {
   var v = ($('otp-input').value || '').trim().replace(/\D/g, '');
   var err = $('otp-error');
@@ -332,8 +397,7 @@ function verifyOtp() {
     window.KsriFirebase.confirmPhoneCode(v).then(function () {
       realOtpPending = false;
       if (err) err.classList.add('hidden');
-      showStep('step-profile');
-      $('profile-name').focus();
+      enterAfterSignIn();
     }).catch(function (e) {
       if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
     });
@@ -2269,14 +2333,10 @@ function signInEmailPasswordFlow() {
      create one. A wrong password for an existing account fails here
      with a clear message (see friendlyAuthError). */
   window.KsriFirebase.signInEmailPassword(v, pw).then(function () {
-    showStep('step-profile');
-    $('profile-name').focus();
-    toast('Signed in — set up your profile');
+    enterAfterSignIn();
   }).catch(function () {
     window.KsriFirebase.createEmailAccount(v, pw).then(function () {
-      showStep('step-profile');
-      $('profile-name').focus();
-      toast('Account created — set up your profile');
+      enterAfterSignIn();
     }).catch(function (e) {
       if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
     });
@@ -2414,6 +2474,9 @@ function openRealNewChat() {
 }
 function searchRealUser() {
   var v = ($('real-search-input').value || '').trim();
+  /* Stored phones are normalised (+91…), so normalise the search too —
+     a bare 10-digit number must find the same user. */
+  if (v && v.indexOf('@') === -1) v = normalizePhone(v);
   var box = $('real-search-results');
   if (!v) { box.innerHTML = '<p class="error">Enter a phone number or email.</p>'; return; }
   box.innerHTML = '<p class="muted small">Searching…</p>';
