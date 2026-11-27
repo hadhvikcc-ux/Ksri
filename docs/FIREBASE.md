@@ -56,6 +56,10 @@ see "Free-tier limits" at the end).
 What the rules do, in plain words: anyone signed in can see user
 profiles (so you can find people), but a chat can only be read by the
 people in it, and nobody can add themselves to someone else's chat.
+One gotcha the app already handles: a chat that does not exist yet has
+no participants, so reading it to check whether it exists is denied
+("Missing or insufficient permissions") — `ensureDM` treats that denial
+as "does not exist" and creates the chat instead of showing an error.
 
 ## Step 5 — Copy the web app config into Ksri
 

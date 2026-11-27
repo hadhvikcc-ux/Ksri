@@ -298,8 +298,7 @@ window.KsriFirebase = (function () {
     var fs = F._fns.fs;
     var id = dmChatId(F.user.uid, otherUid);
     var ref = fs.doc(F._db, 'chats', id);
-    return fs.getDoc(ref).then(function (snap) {
-      if (snap.exists()) return id;
+    function create() {
       return fs.setDoc(ref, {
         participants: [F.user.uid, otherUid],
         type: 'dm',
@@ -309,7 +308,18 @@ window.KsriFirebase = (function () {
         lastMessage: '',
         typing: {}
       }).then(function () { return id; });
-    });
+    }
+    /* The rules only let participants READ a chat, and a chat that does
+       not exist yet has no participants — so getDoc() on a brand-new DM
+       is denied with "Missing or insufficient permissions". That denial
+       does NOT mean the chat cannot be created (the create rule only
+       needs the creator in `participants`), so fall through to create.
+       An existing chat reads fine and is returned untouched, so opening
+       it never wipes lastMessage/typing. */
+    return fs.getDoc(ref).then(function (snap) {
+      if (snap.exists()) return id;
+      return create();
+    }).catch(function () { return create(); });
   };
   F.createGroup = function (name, memberUids) {
     var fs = F._fns.fs;

@@ -432,3 +432,51 @@ test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');
 });
+
+test('ensureDM: denied existence check on a new chat still creates it', async () => {
+  // Regression test for "Could not start chat: Missing or insufficient
+  // permissions". The rules only let participants READ a chat, and a chat
+  // that does not exist yet has no participants — so Firestore denies
+  // getDoc() on a brand-new DM. ensureDM must treat that denial as
+  // "does not exist" and create the chat anyway, not surface the error.
+  const vm = require('node:vm');
+  const fbSrc = fs.readFileSync(path.join(root, 'www', 'firebase.js'), 'utf8');
+  const store = {}; // path -> doc data
+  const setCalls = [];
+  const fakeFs = {
+    doc: (db, coll, id) => ({ __path: coll + '/' + id }),
+    getDoc: (ref) => {
+      if (store[ref.__path]) return Promise.resolve({ exists: () => true, data: () => store[ref.__path] });
+      // Mirror the real rules: reading a missing doc under a
+      // participants-only read rule is denied, not an empty snapshot.
+      return Promise.reject(new Error('Missing or insufficient permissions.'));
+    },
+    setDoc: (ref, data) => { setCalls.push(ref.__path); store[ref.__path] = data; return Promise.resolve(); },
+    serverTimestamp: () => 'ts'
+  };
+  const ctx = { console, setTimeout, clearTimeout, Promise, Error, JSON, Math, Date, Object, Array, RegExp };
+  ctx.window = ctx;
+  ctx.CustomEvent = function (type, opts) { this.type = type; this.detail = (opts && opts.detail) || null; };
+  ctx.window.dispatchEvent = () => true;
+  vm.createContext(ctx);
+  vm.runInContext(fbSrc, ctx, { filename: 'firebase.js' });
+  const FB = ctx.KsriFirebase;
+  FB._fns = { fs: fakeFs };
+  FB.user = { uid: 'u1' };
+
+  // 1. New DM: getDoc denied -> chat still created, id returned.
+  const id = await FB.ensureDM('u2');
+  assert.equal(id, 'dm_u1_u2');
+  // (join: the array lives in the vm realm, so deepEqual on prototypes fails)
+  assert.equal(store['chats/dm_u1_u2'].participants.join(','), 'u1,u2');
+  assert.equal(store['chats/dm_u1_u2'].type, 'dm');
+  assert.equal(setCalls.length, 1);
+
+  // 2. Existing DM: returned untouched, no second write (lastMessage etc.
+  //    must not be wiped by re-opening the chat).
+  store['chats/dm_u1_u2'].lastMessage = 'Hello';
+  const id2 = await FB.ensureDM('u2');
+  assert.equal(id2, 'dm_u1_u2');
+  assert.equal(setCalls.length, 1);
+  assert.equal(store['chats/dm_u1_u2'].lastMessage, 'Hello');
+});
