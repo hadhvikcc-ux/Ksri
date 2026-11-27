@@ -216,8 +216,10 @@ run('www/app.js');
   await sleep(10);
   check('ensureDM called for u2', calls.some((c) => c[0] === 'ensureDM' && c[1] === 'u2'));
 
-  // Logout signs out of Firebase.
+  // Logout asks for confirmation (in-page modal), then signs out of Firebase.
   ctx.logout();
+  check('logout asks for confirmation', !els['modal']._cls.has('hidden'));
+  ctx.ksriConfirmYes();
   check('logout called Firebase signOut', calls.some((c) => c[0] === 'signOut'));
   check('realMode false after logout', ctx.realMode === false);
 

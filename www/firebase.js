@@ -140,8 +140,36 @@ window.KsriFirebase = (function () {
   }
   F.friendlyAuthError = friendlyAuthError;
 
+  /* Every adapter method below must REJECT (never throw synchronously)
+     when Firebase has not initialised yet. F._fns is null until init()
+     finishes, and a sync TypeError escapes the callers' .catch handlers
+     (which only see rejected promises) — so the button that called it
+     looks dead with no error shown. */
+  function notInitialised() {
+    return Promise.reject(new Error('Firebase is not ready yet — check your connection and try again, or use demo mode.'));
+  }
+  /* Race a promise against a timeout so a stalled Auth call cannot
+     freeze sign-in forever (same pattern as getUserProfile's 10s
+     timeout below). F._authTimeoutMs is test-only; default is 15s. */
+  function withTimeout(promise, message) {
+    var ms = F._authTimeoutMs || 15000;
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return; done = true;
+        reject(new Error(message));
+      }, ms);
+      promise.then(function (v) {
+        if (done) return; done = true; clearTimeout(timer); resolve(v);
+      }, function (e) {
+        if (done) return; done = true; clearTimeout(timer); reject(e);
+      });
+    });
+  }
+
   /* Real SMS code. Needs a #recaptcha-container element in the page. */
   F.sendPhoneCode = function (phone) {
+    if (!F._fns) return notInitialised();
     var auth = F._fns.auth;
     var container = document.getElementById('recaptcha-container');
     if (!container) return Promise.reject(new Error('reCAPTCHA container missing from the page.'));
@@ -152,7 +180,7 @@ window.KsriFirebase = (function () {
         return Promise.reject(e);
       }
     }
-    return auth.signInWithPhoneNumber(F._auth, phone, F._recaptcha).then(function (confirmation) {
+    return withTimeout(auth.signInWithPhoneNumber(F._auth, phone, F._recaptcha).then(function (confirmation) {
       F._confirmation = confirmation;
       return true;
     }).catch(function (err) {
@@ -161,10 +189,11 @@ window.KsriFirebase = (function () {
       try { if (F._recaptcha) { F._recaptcha.clear(); } } catch (e) { /* ignore */ }
       F._recaptcha = null;
       throw err;
-    });
+    }), 'SMS code request timed out — check your connection and try again.');
   };
   F.hasPendingPhoneCode = function () { return !!F._confirmation; };
   F.confirmPhoneCode = function (code) {
+    if (!F._fns) return notInitialised();
     if (!F._confirmation) return Promise.reject(new Error('No SMS code was requested — tap "Send OTP" first.'));
     return F._confirmation.confirm(code).then(function (cred) {
       F.user = cred.user;
@@ -180,6 +209,7 @@ window.KsriFirebase = (function () {
      never finishes. Refuse file:// outright instead of sending a link
      that can never work. On Android use email + password instead. */
   F.sendEmailLink = function (email) {
+    if (!F._fns) return notInitialised();
     var auth = F._fns.auth;
     if ((window.location.protocol || '') === 'file:' ||
         (window.location.href || '').indexOf('file://') === 0) {
@@ -199,12 +229,13 @@ window.KsriFirebase = (function () {
      was not saved on this device — e.g. the link was clicked on a
      different browser than the one that requested it). */
   F.completeEmailLinkWith = function (email) {
+    if (!F._fns) return notInitialised();
     var auth = F._fns.auth;
-    return auth.signInWithEmailLink(F._auth, email, window.location.href).then(function (cred) {
+    return withTimeout(auth.signInWithEmailLink(F._auth, email, window.location.href).then(function (cred) {
       F.user = cred.user;
       try { localStorage.setItem('ksri_email_for_signin', email); } catch (e) { /* ignore */ }
       return cred.user;
-    });
+    }), 'Sign-in link timed out — check your connection and try again.');
   };
   F.completeEmailLink = function () {
     var email = null;
@@ -221,16 +252,18 @@ window.KsriFirebase = (function () {
 
   /* Email + password (the Android-friendly email path). */
   F.createEmailAccount = function (email, password) {
-    return F._fns.auth.createUserWithEmailAndPassword(F._auth, email, password).then(function (cred) {
+    if (!F._fns) return notInitialised();
+    return withTimeout(F._fns.auth.createUserWithEmailAndPassword(F._auth, email, password).then(function (cred) {
       F.user = cred.user;
       return cred.user;
-    });
+    }), 'Account creation timed out — check your connection and try again.');
   };
   F.signInEmailPassword = function (email, password) {
-    return F._fns.auth.signInWithEmailAndPassword(F._auth, email, password).then(function (cred) {
+    if (!F._fns) return notInitialised();
+    return withTimeout(F._fns.auth.signInWithEmailAndPassword(F._auth, email, password).then(function (cred) {
       F.user = cred.user;
       return cred.user;
-    });
+    }), 'Sign-in timed out — check your connection and try again.');
   };
 
   F.signOut = function () {
@@ -257,6 +290,7 @@ window.KsriFirebase = (function () {
     return fs.setDoc(fs.doc(F._db, 'users', F.user.uid), data, { merge: true });
   };
   F.getUserProfile = function (uid) {
+    if (!F._fns) return notInitialised();
     var fs = F._fns.fs;
     /* A Firestore read that never settles must not freeze sign-in
        forever: Auth can succeed (the console proves it) while this
@@ -314,6 +348,7 @@ window.KsriFirebase = (function () {
   F.dmChatId = dmChatId;
 
   F.ensureDM = function (otherUid) {
+    if (!F._fns) return notInitialised();
     var fs = F._fns.fs;
     var id = dmChatId(F.user.uid, otherUid);
     var ref = fs.doc(F._db, 'chats', id);

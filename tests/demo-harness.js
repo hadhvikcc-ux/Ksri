@@ -136,8 +136,10 @@ check('demo message sent locally', ctx.getChat(chatId).messages.length === befor
 ctx.renderSettings();
 check('settings mentions Demo mode', (els['settings-list'].innerHTML || '').indexOf('Demo mode') !== -1);
 
-// Logout returns to auth screen.
+// Logout asks for confirmation (in-page modal), then returns to auth screen.
 ctx.logout();
+check('logout asks for confirmation', !els['modal']._cls.has('hidden'));
+ctx.ksriConfirmYes();
 check('logout clears user', ctx.state.user === null);
 check('auth screen shown after logout', !els['auth-screen']._cls.has('hidden'));
 

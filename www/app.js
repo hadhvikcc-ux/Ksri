@@ -145,11 +145,22 @@ function seed() {
 }
 
 var state = load() || seed();
-if (!state.chats) state = seed();
+/* Corrupt-state hardening: a damaged saved state (wrong shapes from
+   an old build or a failed write) must not crash the app on boot.
+   Validate the shapes and reset invalid pieces to seed / empty
+   defaults instead of trusting them. */
+if (!state || typeof state !== 'object') state = seed();
+if (!Array.isArray(state.chats)) state.chats = seed().chats;
+if (!Array.isArray(state.notes)) state.notes = [];
 if (!Array.isArray(state.events)) state.events = [];
 if (!Array.isArray(state.todos)) state.todos = [];
 if (!Array.isArray(state.reminders)) state.reminders = [];
-if (!Array.isArray(state.notes)) state.notes = [];
+if (!Array.isArray(state.scheduled)) state.scheduled = [];
+if (!Array.isArray(state.statuses)) state.statuses = [];
+if (!Array.isArray(state.calls)) state.calls = [];
+if (!Array.isArray(state.channels)) state.channels = [];
+if (!Array.isArray(state.broadcasts)) state.broadcasts = [];
+if (!state.settings || typeof state.settings !== 'object') state.settings = seed().settings;
 /* Migration: notes saved before target dates existed get the new fields. */
 state.notes.forEach(function (n) { if (n.targetDate === undefined) n.targetDate = ''; if (n.targetTime === undefined) n.targetTime = '09:00'; });
 if (!state.settings) state.settings = {};
@@ -186,7 +197,7 @@ var realTypingSent = false;
 
 /* ---------- persistence helpers ---------- */
 function getChat(id) { return state.chats.find(function (c) { return c.id === id; }); }
-function lastMsg(chat) { var ms = chat.messages.filter(function (m) { return !m.deleted; }); return ms[ms.length - 1]; }
+function lastMsg(chat) { var ms = (chat.messages || []).filter(function (m) { return !m.deleted; }); return ms[ms.length - 1]; }
 function applyTheme() { document.body.classList.toggle('dark', state.settings.theme === 'dark'); }
 function applyFontSize() { var s = state.settings.fontSize; document.documentElement.style.fontSize = s === 'small' ? '14px' : s === 'large' ? '18px' : '16px'; }
 
@@ -348,6 +359,13 @@ function continueDemoAccount() {
   toast('Demo account — no OTP needed');
 }
 function skipOtp() { continueDemoAccount(); }
+function enterDemoMode() {
+  /* Always-available escape hatch: enter the fully working demo app
+     even when Firebase is ready but real sign-in cannot complete
+     here (e.g. this address is not on Firebase's authorised-domains
+     list). Same as continuing with a demo account. */
+  continueDemoAccount();
+}
 function enterAfterSignIn() {
   /* After a successful sign-in: RETURNING users (a Firestore profile
      already exists for this uid) go straight into the app — they must
@@ -439,28 +457,29 @@ function finishRegistration() {
       displayName: name, bio: bio, avatarColor: AVATAR_COLORS[avatarColorIdx],
       phone: pendingMethod === 'phone' ? pendingValue : '',
       email: pendingMethod === 'email' ? pendingValue : ''
-    });
+    }).catch(function () { /* best effort — a failed save must not block entering the app */ });
   }
   save();
   enterApp();
   toast('Welcome to Ksri, ' + name + '! 🎉');
 }
 function logout() {
-  if (!confirm('Log out? Your chats stay on this device, but you will need to sign in again.')) return;
-  /* REAL MODE: sign out of Firebase and stop live listeners. */
-  if (firebaseReady && window.KsriFirebase) {
-    window.KsriFirebase.signOut();
-    stopRealChats();
-    stopRealMessages();
-    realMode = false;
-  }
-  state.user = null;
-  save();
-  $('app-screen').classList.add('hidden');
-  $('chat-screen').classList.add('hidden');
-  $('auth-screen').classList.remove('hidden');
-  showStep('step-method');
-  updateModeBadge();
+  confirmModal('Log out? Your chats stay on this device, but you will need to sign in again.', function () {
+    /* REAL MODE: sign out of Firebase and stop live listeners. */
+    if (firebaseReady && window.KsriFirebase) {
+      window.KsriFirebase.signOut();
+      stopRealChats();
+      stopRealMessages();
+      realMode = false;
+    }
+    state.user = null;
+    save();
+    $('app-screen').classList.add('hidden');
+    $('chat-screen').classList.add('hidden');
+    $('auth-screen').classList.remove('hidden');
+    showStep('step-method');
+    updateModeBadge();
+  });
 }
 function enterApp() {
   $('auth-screen').classList.add('hidden');
@@ -504,7 +523,7 @@ function chatMatches(chat, q) {
   if (!q) return true;
   q = q.toLowerCase();
   if (chat.name.toLowerCase().indexOf(q) !== -1) return true;
-  return chat.messages.some(function (m) { return (m.text || '').toLowerCase().indexOf(q) !== -1; });
+  return (chat.messages || []).some(function (m) { return (m.text || '').toLowerCase().indexOf(q) !== -1; });
 }
 function renderChats() {
   var q = ($('global-search-input') ? $('global-search-input').value.trim() : '');
@@ -1125,7 +1144,25 @@ function savePoll() {
 /* ---------- MODAL ---------- */
 function openModal(html) { $('modal-card').innerHTML = html; $('modal').classList.remove('hidden'); }
 function closeModal() { $('modal').classList.add('hidden'); $('modal-card').innerHTML = ''; }
-$('modal').addEventListener('click', function (e) { if (e.target === $('modal')) closeModal(); });
+/* In-page confirmation, replacing the native confirm() dialog. A
+   sandboxed iframe without allow-modals makes confirm() return false
+   immediately, so the button silently does nothing. This opens the
+   same in-page modal the rest of the app uses; tapping "Yes" closes
+   the modal and runs the callback. */
+var _confirmCallback = null;
+function confirmModal(message, onYes) {
+  _confirmCallback = onYes;
+  openModal('<h3>Please confirm</h3><p>' + esc(message) + '</p>' +
+    '<div class="modal-actions"><button class="btn-outline" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn-primary" onclick="ksriConfirmYes()">Yes, continue</button></div>');
+}
+function ksriConfirmYes() {
+  var cb = _confirmCallback; _confirmCallback = null;
+  closeModal();
+  if (cb) cb();
+}
+var _modalEl = $('modal');
+if (_modalEl) _modalEl.addEventListener('click', function (e) { if (e.target === $('modal')) closeModal(); });
 
 /* ---------- CHAT MENU / INFO / LOCK / WALLPAPER ---------- */
 function openChatMenu() { if (currentChatId) openChatMenuFor(currentChatId); }
@@ -1159,11 +1196,12 @@ function toggleArchive(id) {
 }
 function markRead(id) { var c = getChat(id); c.unread = 0; save(); closeModal(); renderChats(); toast('Marked as read'); }
 function deleteChat(id) {
-  if (!confirm('Delete this chat? This cannot be undone.')) return;
-  state.chats = state.chats.filter(function (c) { return c.id !== id; });
-  save(); closeModal();
-  if (currentChatId === id) closeChat();
-  renderChats(); toast('Chat deleted');
+  confirmModal('Delete this chat? This cannot be undone.', function () {
+    state.chats = state.chats.filter(function (c) { return c.id !== id; });
+    save(); closeModal();
+    if (currentChatId === id) closeChat();
+    renderChats(); toast('Chat deleted');
+  });
 }
 function toggleLock(id) {
   var c = getChat(id); if (!c) return;
@@ -1458,10 +1496,11 @@ function clearNoteTargetDate() {
 }
 function editNote(id) { openNoteCreator(id); }
 function deleteNote(id) {
-  if (!confirm('Delete this note and its 1-day-before reminder?')) return;
-  state.notes = state.notes.filter(function (x) { return x.id !== id; });
-  removeRemindersFor('note', id);
-  save(); closeModal(); openNotesPanel(); toast('Note deleted');
+  confirmModal('Delete this note and its 1-day-before reminder?', function () {
+    state.notes = state.notes.filter(function (x) { return x.id !== id; });
+    removeRemindersFor('note', id);
+    save(); closeModal(); openNotesPanel(); toast('Note deleted');
+  });
 }
 function toggleNote(id) {
   var n = state.notes.find(function (x) { return x.id === id; }); if (!n) return;
@@ -1931,9 +1970,10 @@ function importBackup(ev) {
   r.readAsText(file);
 }
 function clearAllData() {
-  if (!confirm('Erase ALL Ksri data on this device (chats, statuses, settings)?')) return;
-  localStorage.removeItem(KEY);
-  location.reload();
+  confirmModal('Erase ALL Ksri data on this device (chats, statuses, settings)?', function () {
+    localStorage.removeItem(KEY);
+    location.reload();
+  });
 }
 function openAbout() {
   openModal('<h3>About Ksri</h3><p>Ksri v1.0.0 — a WhatsApp-style messenger that works fully offline.</p>' +
@@ -2088,10 +2128,11 @@ function saveEvent() {
 }
 function editEvent(id) { openEventCreator(null, null, id); }
 function deleteEvent(id) {
-  if (!confirm('Delete this event and its 1-day-before reminder?')) return;
-  state.events = state.events.filter(function (e) { return e.id !== id; });
-  removeRemindersFor('event', id);
-  save(); renderCalendar(); toast('Event deleted');
+  confirmModal('Delete this event and its 1-day-before reminder?', function () {
+    state.events = state.events.filter(function (e) { return e.id !== id; });
+    removeRemindersFor('event', id);
+    save(); renderCalendar(); toast('Event deleted');
+  });
 }
 
 /* ----- To-do list ----- */
@@ -2171,10 +2212,11 @@ function toggleTodo(id) {
   toast(td.done ? 'Task done ✅' : 'Task reopened');
 }
 function deleteTodo(id) {
-  if (!confirm('Delete this task and its reminder?')) return;
-  state.todos = state.todos.filter(function (t) { return t.id !== id; });
-  removeRemindersFor('todo', id);
-  save(); renderTodos(); toast('Task deleted');
+  confirmModal('Delete this task and its reminder?', function () {
+    state.todos = state.todos.filter(function (t) { return t.id !== id; });
+    removeRemindersFor('todo', id);
+    save(); renderTodos(); toast('Task deleted');
+  });
 }
 
 /* ----- Reminders: 1 day before, in-app banner + Notification API ----- */
@@ -2287,21 +2329,29 @@ function isFileApp() {
 }
 function refreshAuthModeUI() {
   /* Email in real mode uses a sign-in link / password, not an OTP code —
-     so the Send OTP button is replaced by the email-auth row. */
+     so the Send OTP button is replaced by the email-auth row. The row
+     keys only on the selected method: in demo mode the password button
+     is still reachable, and the flow's own firebaseReady guard takes
+     the demo path when Firebase is not ready. */
   var emailRow = $('email-auth-row');
   var sendBtn = $('send-otp-btn');
-  if (emailRow) emailRow.classList.toggle('hidden', !(firebaseReady && pendingMethod === 'email'));
-  if (sendBtn) sendBtn.classList.toggle('hidden', firebaseReady && pendingMethod === 'email');
+  if (emailRow) emailRow.classList.toggle('hidden', pendingMethod !== 'email');
+  if (sendBtn) sendBtn.classList.toggle('hidden', pendingMethod === 'email');
   /* Email LINKS do not work inside the installed (file://) app: the
      link opens in a browser and never returns, so sign-in never
-     completes. Hide the link button there and show the note instead;
-     the password button stays fully working. On https the link button
-     stays available. */
+     completes. They also need real Firebase, so hide the link button
+     (with the note) in demo mode too. The password button stays fully
+     working in both cases. */
   var linkBtn = $('email-link-btn');
   var linkNote = $('email-link-note');
-  var linkBlocked = firebaseReady && pendingMethod === 'email' && isFileApp();
+  var linkBlocked = pendingMethod === 'email' && (!firebaseReady || isFileApp());
   if (linkBtn) linkBtn.classList.toggle('hidden', linkBlocked);
-  if (linkNote) linkNote.classList.toggle('hidden', !linkBlocked);
+  if (linkNote) {
+    linkNote.classList.toggle('hidden', !linkBlocked);
+    if (linkBlocked) linkNote.textContent = !firebaseReady
+      ? 'Demo mode — sign-in links need real Firebase. Use your password below, or continue with a demo account.'
+      : 'Sign-in links don\'t work inside the installed app — use your password below.';
+  }
 }
 function openModeInfo() {
   var html = firebaseReady
@@ -2333,12 +2383,23 @@ function sendEmailLinkFlow() {
   }
   if (err) err.classList.add('hidden');
   pendingMethod = 'email'; pendingValue = v;
-  window.KsriFirebase.sendEmailLink(v).then(function () {
-    openModal('<h3>Check your inbox ✉️</h3><p>We sent a sign-in link to <b>' + esc(v) + '</b>. Tap the link to finish signing in, then set up your profile.</p><p class="muted small">On Android the link opens in a browser — if it does not bring you back into the app, use the password option instead. Firebase does not send 6-digit codes by email.</p><button class="btn-outline" style="width:100%" onclick="closeModal()">OK</button>');
-    toast('Sign-in link sent');
-  }).catch(function (e) {
+  /* Firebase is not ready: no real link can be sent — take the demo
+     path instead of calling into an uninitialised adapter. */
+  if (!firebaseReady || !window.KsriFirebase) {
+    toast('Demo mode — no email is actually sent. Continuing with a demo account.');
+    continueDemoAccount();
+    return;
+  }
+  try {
+    window.KsriFirebase.sendEmailLink(v).then(function () {
+      openModal('<h3>Check your inbox ✉️</h3><p>We sent a sign-in link to <b>' + esc(v) + '</b>. Tap the link to finish signing in, then set up your profile.</p><p class="muted small">On Android the link opens in a browser — if it does not bring you back into the app, use the password option instead. Firebase does not send 6-digit codes by email.</p><button class="btn-outline" style="width:100%" onclick="closeModal()">OK</button>');
+      toast('Sign-in link sent');
+    }).catch(function (e) {
+      if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+    });
+  } catch (e) {
     if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
-  });
+  }
 }
 /* The sign-in link was opened but the email was not saved on this
    device (e.g. the link was requested on another browser/phone). Ask
@@ -2366,12 +2427,24 @@ function submitEmailLinkEmail() {
   }
   if (err) err.classList.add('hidden');
   pendingMethod = 'email'; pendingValue = v;
-  window.KsriFirebase.completeEmailLinkWith(v).then(function () {
+  /* A link can only be completed with real Firebase — without it,
+     take the demo path instead of calling an uninitialised adapter. */
+  if (!firebaseReady || !window.KsriFirebase) {
     closeModal();
-    afterFirebaseAuth();
-  }).catch(function (e) {
+    toast('Demo mode — the link cannot be completed without Firebase. Continuing with a demo account.');
+    continueDemoAccount();
+    return;
+  }
+  try {
+    window.KsriFirebase.completeEmailLinkWith(v).then(function () {
+      closeModal();
+      afterFirebaseAuth();
+    }).catch(function (e) {
+      if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+    });
+  } catch (e) {
     if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
-  });
+  }
 }
 function signInEmailPasswordFlow() {
   var v = ($('id-input').value || '').trim().toLowerCase();
@@ -2387,18 +2460,30 @@ function signInEmailPasswordFlow() {
   }
   if (err) err.classList.add('hidden');
   pendingMethod = 'email'; pendingValue = v;
+  /* Firebase is not ready (CDN unreachable / still initialising):
+     never call into it — the adapter would throw synchronously and
+     the button would look dead. Take the demo path instead: the
+     account is created locally and profile setup follows. */
+  if (!firebaseReady || !window.KsriFirebase) {
+    continueDemoAccount();
+    return;
+  }
   /* One button for both: try sign-in; if there is no account yet,
      create one. A wrong password for an existing account fails here
      with a clear message (see friendlyAuthError). */
-  window.KsriFirebase.signInEmailPassword(v, pw).then(function () {
-    enterAfterSignIn();
-  }).catch(function () {
-    window.KsriFirebase.createEmailAccount(v, pw).then(function () {
+  try {
+    window.KsriFirebase.signInEmailPassword(v, pw).then(function () {
       enterAfterSignIn();
-    }).catch(function (e) {
-      if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+    }).catch(function () {
+      window.KsriFirebase.createEmailAccount(v, pw).then(function () {
+        enterAfterSignIn();
+      }).catch(function (e) {
+        if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+      });
     });
-  });
+  } catch (e) {
+    if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+  }
 }
 
 /* ---------- REAL CHATS: Firestore -> local chat model ---------- */
@@ -2650,3 +2735,195 @@ document.addEventListener('DOMContentLoaded', function () {
     setTimeout(boot, 4000);
   }
 });
+
+/* ---------- PUBLISH HANDLERS ON window ---------- */
+/* The hosted preview serves this file's inline scripts bundled inside
+   a single function scope, so top-level function declarations never
+   become window globals — and every button uses an inline onclick
+   handler, which resolves functions on window. Each tap then threw
+   "<fn> is not defined" and did nothing. Publish every handler
+   explicitly so the buttons work however the page is served. In
+   plain serving the functions are already globals, so assigning the
+   same reference is a harmless no-op. Each half is wrapped in
+   try/catch so a failure here can never break the app. */
+try {
+  var KSRI_HANDLERS = {
+    acceptCall: acceptCall,
+    addMember: addMember,
+    addNote: addNote,
+    attachPhoto: attachPhoto,
+    backToMethod: backToMethod,
+    cancelReply: cancelReply,
+    cancelScheduled: cancelScheduled,
+    changeCalMonth: changeCalMonth,
+    changeNoteCalMonth: changeNoteCalMonth,
+    checkUnlockPin: checkUnlockPin,
+    clearAllData: clearAllData,
+    clearCalDay: clearCalDay,
+    clearNoteTargetDate: clearNoteTargetDate,
+    closeChat: closeChat,
+    closeInChatSearch: closeInChatSearch,
+    closeModal: closeModal,
+    closeStatusViewer: closeStatusViewer,
+    confirmModal: confirmModal,
+    continueDemoAccount: continueDemoAccount,
+    copyMessage: copyMessage,
+    createBroadcastFlow: createBroadcastFlow,
+    createChannel: createChannel,
+    createGroupFlow: createGroupFlow,
+    cycleAvatarColor: cycleAvatarColor,
+    declineCall: declineCall,
+    deleteChat: deleteChat,
+    deleteEvent: deleteEvent,
+    deleteMessage: deleteMessage,
+    deleteNote: deleteNote,
+    deleteTodo: deleteTodo,
+    dismissReminder: dismissReminder,
+    doForward: doForward,
+    doTranslate: doTranslate,
+    editMessage: editMessage,
+    editMyProfile: editMyProfile,
+    endCall: endCall,
+    enterDemoMode: enterDemoMode,
+    exportBackup: exportBackup,
+    fillDemoOtp: fillDemoOtp,
+    finishRegistration: finishRegistration,
+    forwardMessage: forwardMessage,
+    goToToday: goToToday,
+    importBackup: importBackup,
+    insertEmoji: insertEmoji,
+    ksriConfirmYes: ksriConfirmYes,
+    lockAllChats: lockAllChats,
+    logout: logout,
+    markRead: markRead,
+    onMsgTap: onMsgTap,
+    onTypingInput: onTypingInput,
+    openAppMenu: openAppMenu,
+    openChat: openChat,
+    openChatInfo: openChatInfo,
+    openChatInfoFor: openChatInfoFor,
+    openChatMenu: openChatMenu,
+    openChatMenuFor: openChatMenuFor,
+    openDisappearing: openDisappearing,
+    openEventCreator: openEventCreator,
+    openInChatSearch: openInChatSearch,
+    openMessageMenu: openMessageMenu,
+    openMyStatus: openMyStatus,
+    openNewChat: openNewChat,
+    openNoteCreator: openNoteCreator,
+    openNotesChat: openNotesChat,
+    openNotesPanel: openNotesPanel,
+    openPollCreator: openPollCreator,
+    openSchedulePicker: openSchedulePicker,
+    openScreenShareSettings: openScreenShareSettings,
+    openTodoCreator: openTodoCreator,
+    openWallpaperPicker: openWallpaperPicker,
+    otpTyped: otpTyped,
+    quickSchedule: quickSchedule,
+    reactToMessage: reactToMessage,
+    remindMessage: remindMessage,
+    removeMember: removeMember,
+    renderChats: renderChats,
+    renderMessages: renderMessages,
+    replyToStatus: replyToStatus,
+    requestNotificationPermission: requestNotificationPermission,
+    resendOtp: resendOtp,
+    saveChannel: saveChannel,
+    saveEdit: saveEdit,
+    saveEvent: saveEvent,
+    saveGroup: saveGroup,
+    saveMyProfile: saveMyProfile,
+    saveMyStatus: saveMyStatus,
+    saveNote: saveNote,
+    savePoll: savePoll,
+    savePrivacy: savePrivacy,
+    saveScheduled: saveScheduled,
+    saveTodo: saveTodo,
+    searchRealUser: searchRealUser,
+    selectCalDay: selectCalDay,
+    selectNoteCalDay: selectNoteCalDay,
+    sendEmailLinkFlow: sendEmailLinkFlow,
+    sendMessage: sendMessage,
+    sendOtp: sendOtp,
+    sendSmartReply: sendSmartReply,
+    setDisappearing: setDisappearing,
+    setFolder: setFolder,
+    setLockPin: setLockPin,
+    setMethod: setMethod,
+    setMyColor: setMyColor,
+    setReminder: setReminder,
+    setReply: setReply,
+    setTodoChatFilter: setTodoChatFilter,
+    setTodoFilter: setTodoFilter,
+    setWallpaper: setWallpaper,
+    signInEmailPasswordFlow: signInEmailPasswordFlow,
+    simulateIncomingCall: simulateIncomingCall,
+    skipOtp: skipOtp,
+    snoozeReminder: snoozeReminder,
+    starMessage: starMessage,
+    startCall: startCall,
+    startCallPrompt: startCallPrompt,
+    startChatCall: startChatCall,
+    startChatScreenShare: startChatScreenShare,
+    startChatWith: startChatWith,
+    startDemoScreenShare: startDemoScreenShare,
+    startGroupCall: startGroupCall,
+    startRealChatWith: startRealChatWith,
+    startScreenShareCallPrompt: startScreenShareCallPrompt,
+    startVoiceNote: startVoiceNote,
+    stopScreenShare: stopScreenShare,
+    stopVoiceNote: stopVoiceNote,
+    submitEmailLinkEmail: submitEmailLinkEmail,
+    switchTab: switchTab,
+    toggleArchive: toggleArchive,
+    toggleArchived: toggleArchived,
+    toggleCallMute: toggleCallMute,
+    toggleCallVideo: toggleCallVideo,
+    toggleEmojiPicker: toggleEmojiPicker,
+    toggleFollowChannel: toggleFollowChannel,
+    toggleGlobalSearch: toggleGlobalSearch,
+    toggleLock: toggleLock,
+    toggleMute: toggleMute,
+    toggleNote: toggleNote,
+    toggleNoteCalendar: toggleNoteCalendar,
+    togglePin: togglePin,
+    toggleReadReceipts: toggleReadReceipts,
+    toggleScreenShare: toggleScreenShare,
+    toggleScreenShareSetting: toggleScreenShareSetting,
+    toggleTodo: toggleTodo,
+    transcribeVoice: transcribeVoice,
+    translateMessage: translateMessage,
+    unlockLockedChats: unlockLockedChats,
+    verifyOtp: verifyOtp,
+    viewStarred: viewStarred,
+    viewStatus: viewStatus,
+    votePoll: votePoll,
+  };
+  Object.keys(KSRI_HANDLERS).forEach(function (name) {
+    try { window[name] = KSRI_HANDLERS[name]; } catch (e) { /* ignore */ }
+  });
+} catch (e) { /* never break the app */ }
+/* Inline handlers also read these two bare globals as arguments
+   (e.g. onclick="openEventCreator(currentChatId)") — bridge them
+   with getter/setters so they resolve on window too. Only define
+   the bridge when the name is not already a window global (plain
+   serving): redefining a var-backed global as an accessor would
+   recurse, because the getter would read the property it defines. */
+if (!('currentChatId' in window)) {
+  try {
+    Object.defineProperty(window, 'currentChatId', {
+      configurable: true, enumerable: true,
+      get: function () { return currentChatId; },
+      set: function (v) { currentChatId = v; }
+    });
+  } catch (e) { /* ignore */ }
+}
+if (!('activeReminderId' in window)) {
+  try {
+    Object.defineProperty(window, 'activeReminderId', {
+      configurable: true, enumerable: true,
+      get: function () { return activeReminderId; },
+      set: function (v) { activeReminderId = v; }
+    });
+  } catch (e) { /* ignore */ }
+}

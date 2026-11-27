@@ -518,3 +518,192 @@ test('getUserProfile: a stalled Firestore read times out instead of freezing sig
   FB._fns.fs.getDoc = () => Promise.resolve({ exists: () => false, data: () => null });
   assert.equal(await FB.getUserProfile('u9'), null);
 });
+
+/* ---------- v20 hardening: buttons must work however the page is
+   served, and auth must never die silently ---------- */
+
+// Minimal DOM stub for running app.js in a vm (mirrors the
+// real-harness stubs, cut down to what these tests need).
+function makeAppEl(id) {
+  const cls = new Set();
+  return {
+    id, value: '', textContent: '', innerHTML: '', style: {}, dataset: {},
+    classList: {
+      add: (c) => cls.add(c), remove: (c) => cls.delete(c),
+      toggle: (c, f) => { if (f === undefined) { cls.has(c) ? cls.delete(c) : cls.add(c); } else if (f) cls.add(c); else cls.delete(c); },
+      contains: (c) => cls.has(c)
+    },
+    addEventListener: () => {}, removeEventListener: () => {},
+    focus: () => {}, click: () => {},
+    querySelectorAll: () => [], querySelector: () => null,
+    appendChild: () => {}, setAttribute: () => {}, getAttribute: () => null,
+    _cls: cls
+  };
+}
+function runAppJs(preloadedStore) {
+  const vm = require('node:vm');
+  const store = Object.assign({}, preloadedStore || {});
+  const els = {};
+  const listeners = {};
+  const ctx = {
+    console,
+    // No-op timers: toast hides itself on a timer, but nothing under
+    // test needs a timer to fire — and this keeps the suite fast.
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+    Date, JSON, Math, Object, Array, Promise, RegExp, Error,
+    navigator: {},
+    location: { href: 'https://ksri.example/', protocol: 'https:' },
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; }
+    },
+    CustomEvent: function (type, opts) { this.type = type; this.detail = (opts && opts.detail) || null; },
+  };
+  ctx.window = ctx;
+  ctx.document = {
+    getElementById: (id) => { if (!els[id]) els[id] = makeAppEl(id); return els[id]; },
+    querySelectorAll: () => [],
+    createElement: () => makeAppEl('created'),
+    addEventListener: (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); },
+    documentElement: { style: {} },
+    body: { classList: { toggle: () => {}, add: () => {}, remove: () => {} } }
+  };
+  ctx.window.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+  ctx.window.dispatchEvent = () => true;
+  vm.createContext(ctx);
+  // Simulate the hosted preview: scripts bundled in one IIFE scope, so
+  // top-level declarations are NOT window globals unless published.
+  vm.runInContext('(function(){\n' + appJs + '\n})();', ctx, { filename: 'app.js (IIFE-wrapped)' });
+  return { ctx, els, store, el: (id) => ctx.document.getElementById(id) };
+}
+
+test('signInEmailPasswordFlow: Firebase not ready takes the demo path', () => {
+  // Source shape: firebaseReady guard + try/catch around the call.
+  const flow = appJs.slice(appJs.indexOf('function signInEmailPasswordFlow()'), appJs.indexOf('/* ---------- REAL CHATS'));
+  assert.match(flow, /!firebaseReady/);
+  assert.match(flow, /continueDemoAccount\(\)/);
+  assert.match(flow, /try\s*\{/);
+  // Behaviour: Firebase uninitialised — the adapter must never be
+  // called, and the user must reach profile setup anyway.
+  const { ctx, el } = runAppJs();
+  assert.equal(typeof ctx.signInEmailPasswordFlow, 'function', 'handler published on window');
+  let signInCalled = false;
+  ctx.KsriFirebase = {
+    ready: false, user: null, _fns: null,
+    friendlyAuthError: (e) => (e && e.message) || 'error',
+    signInEmailPassword: () => { signInCalled = true; return Promise.resolve({}); },
+    createEmailAccount: () => Promise.resolve({})
+  };
+  el('id-input').value = 'test@example.com';
+  el('email-password').value = 'password123';
+  ctx.signInEmailPasswordFlow();
+  assert.equal(signInCalled, false, 'must not call Firebase when not ready');
+  assert.ok(el('step-method')._cls.has('hidden'), 'method step hidden after demo advance');
+  assert.ok(el('step-otp')._cls.has('hidden'), 'otp step hidden after demo advance');
+  assert.ok(!el('step-profile')._cls.has('hidden'), 'demo path advances to profile setup');
+  assert.equal(el('profile-name').value, 'Hadhvik', 'demo path pre-fills a name');
+});
+
+test('window publishing: handlers published and bare globals bridged (IIFE serving)', () => {
+  const { ctx, el } = runAppJs();
+  // Source shape: publishing block + both bridges.
+  assert.match(appJs, /var KSRI_HANDLERS = \{/);
+  for (const name of ['setMethod', 'sendOtp', 'signInEmailPasswordFlow', 'enterDemoMode']) {
+    assert.match(appJs, new RegExp(name + ': ' + name + ','));
+  }
+  assert.match(appJs, /Object\.defineProperty\(window, 'currentChatId'/);
+  assert.match(appJs, /Object\.defineProperty\(window, 'activeReminderId'/);
+  // Behaviour: after the IIFE-wrapped run, handlers live on window.
+  for (const name of ['setMethod', 'sendOtp', 'signInEmailPasswordFlow', 'enterDemoMode', 'verifyOtp', 'openChatMenu', 'ksriConfirmYes', 'confirmModal', 'switchTab', 'logout']) {
+    assert.equal(typeof ctx[name], 'function', name + ' published on window');
+  }
+  // Bridge: writing window.currentChatId sets the app's internal var,
+  // and reading it back returns the same value.
+  assert.equal(ctx.currentChatId, null);
+  ctx.currentChatId = 'c-amma';
+  assert.equal(ctx.currentChatId, 'c-amma');
+  ctx.openChatMenu(); // reads the internal currentChatId
+  assert.match(el('modal-card').innerHTML, /Amma/);
+  ctx.activeReminderId = 'r1';
+  assert.equal(ctx.activeReminderId, 'r1');
+});
+
+test('no bare confirm() calls remain in app.js', () => {
+  // Strip block and line comments first: the helper's own comment
+  // mentions confirm(), and that is allowed.
+  const noComments = appJs.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  assert.doesNotMatch(noComments, /(^|[^\w$.])confirm\s*\(/);
+  // The six destructive actions now use the in-page modal.
+  for (const fn of ['logout', 'deleteChat', 'deleteNote', 'clearAllData', 'deleteEvent', 'deleteTodo']) {
+    const start = appJs.indexOf('function ' + fn + '(');
+    assert.ok(start !== -1, fn + ' exists');
+    assert.match(appJs.slice(start, start + 600), /confirmModal\(/, fn + ' uses confirmModal');
+  }
+  assert.match(appJs, /function ksriConfirmYes\(\)/);
+});
+
+test('toast cannot swallow taps (pointer-events:none)', () => {
+  assert.match(css, /\.toast\{[^}]*pointer-events\s*:\s*none/);
+});
+
+test('firebase.js adapter methods reject (not throw) when _fns is null', async () => {
+  const vm = require('node:vm');
+  const fbSrc = fs.readFileSync(path.join(root, 'www', 'firebase.js'), 'utf8');
+  const store = {};
+  const ctx = {
+    console, setTimeout, clearTimeout, Promise, Error, JSON, Math, Date, Object, Array, RegExp,
+    location: { href: 'https://ksri.example/', protocol: 'https:' },
+    localStorage: {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: (k) => { delete store[k]; }
+    },
+    document: { getElementById: () => null },
+    CustomEvent: function (type, opts) { this.type = type; this.detail = (opts && opts.detail) || null; },
+  };
+  ctx.window = ctx;
+  ctx.window.dispatchEvent = () => true;
+  vm.createContext(ctx);
+  vm.runInContext(fbSrc, ctx, { filename: 'firebase.js' });
+  const FB = ctx.KsriFirebase;
+  assert.equal(FB._fns, null, 'adapter starts uninitialised');
+  // Each must return a rejected promise — never throw synchronously.
+  for (const [name, args] of [
+    ['signInEmailPassword', ['a@b.co', 'password123']],
+    ['createEmailAccount', ['a@b.co', 'password123']],
+    ['sendEmailLink', ['a@b.co']],
+    ['completeEmailLinkWith', ['a@b.co']],
+    ['completeEmailLink', []],
+    ['sendPhoneCode', ['+919999999999']],
+    ['confirmPhoneCode', ['123456']],
+    ['getUserProfile', ['u1']],
+    ['ensureDM', ['u2']],
+  ]) {
+    let p;
+    assert.doesNotThrow(() => { p = FB[name](...args); }, name + ' must not throw');
+    assert.ok(p && typeof p.then === 'function', name + ' returns a promise');
+    await assert.rejects(() => p, /Firebase is not ready yet|email address you used|No SMS code/);
+  }
+  // Timeout: a stalled Auth call rejects instead of hanging forever.
+  FB._authTimeoutMs = 30; // test speed only; default is 15000
+  FB._fns = {
+    auth: { signInWithEmailAndPassword: () => new Promise(() => {}) }, // stalls forever
+    fs: { doc: () => ({}), getDoc: () => Promise.resolve({ exists: () => false }) }
+  };
+  await assert.rejects(() => FB.signInEmailPassword('a@b.co', 'password123'), /timed out/);
+  // A healthy call still resolves.
+  FB._fns.auth.signInWithEmailAndPassword = () => Promise.resolve({ user: { uid: 'u1' } });
+  const u = await FB.signInEmailPassword('a@b.co', 'password123');
+  assert.equal(u.uid, 'u1');
+});
+
+test('corrupt saved state is repaired instead of crashing', () => {
+  const corrupt = JSON.stringify({ chats: 'nope', notes: 42, events: null, todos: 'x', reminders: {}, settings: 'bad', user: null });
+  const { ctx } = runAppJs({ ksri_v1: corrupt });
+  assert.doesNotThrow(() => ctx.renderChats(), 'renderChats survives corrupt state');
+  // Source shape: validation + tolerant lastMsg.
+  assert.match(appJs, /if \(!Array\.isArray\(state\.chats\)\) state\.chats = seed\(\)\.chats;/);
+  assert.match(appJs, /if \(!state\.settings \|\| typeof state\.settings !== 'object'\)/);
+  assert.match(appJs, /\(chat\.messages \|\| \[\]\)\.filter/);
+});

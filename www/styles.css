@@ -163,7 +163,7 @@ body.dark .reply-preview{background:#3a2f00; color:#ffe08a}
 .menu-item{display:block; width:100%; text-align:left; padding:13px 6px; font-size:15.5px; border-bottom:1px solid var(--border)}
 .menu-item:last-child{border-bottom:none}
 .menu-item.danger{color:var(--danger)}
-.toast{position:absolute; bottom:90px; left:50%; transform:translateX(-50%); background:#323232; color:#fff; padding:10px 18px; border-radius:22px; font-size:14px; z-index:99; box-shadow:var(--shadow); white-space:nowrap}
+.toast{position:absolute; bottom:90px; left:50%; transform:translateX(-50%); background:#323232; color:#fff; padding:10px 18px; border-radius:22px; font-size:14px; z-index:99; box-shadow:var(--shadow); white-space:nowrap; pointer-events:none}
 .call-screen{position:absolute; inset:0; background:linear-gradient(180deg,#0b141a,#075E54); color:#fff; z-index:60; display:flex; flex-direction:column; align-items:center; padding:60px 20px 40px}
 .call-screen .avatar{width:110px; height:110px; font-size:44px}
 .call-timer{font-size:20px; margin-top:14px; opacity:.9}

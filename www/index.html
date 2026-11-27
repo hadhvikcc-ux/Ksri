@@ -43,6 +43,8 @@
       <button class="btn-primary" id="send-otp-btn" onclick="sendOtp()">Send OTP →</button>
       <button class="btn-outline demo-only" onclick="continueDemoAccount()">Continue with demo account →</button>
       <button class="btn-link demo-only" onclick="skipOtp()">Skip OTP (demo)</button>
+      <button class="btn-outline demo-escape" onclick="enterDemoMode()">Continue in demo mode →</button>
+      <p class="tiny muted">Real sign-in not working here? Demo mode always works — chats are simulated on this device.</p>
       <p class="tiny muted demo-only">Demo build: no SMS/email is actually sent. Your OTP is <b>123456</b> and is shown on this screen and the next screen.</p>
       <p class="tiny muted real-only hidden">Real mode: a real SMS code will be sent to your phone. For email, use the sign-in link or password above — Firebase does not send codes by email.</p>
     </div>
@@ -59,6 +61,7 @@
       <button class="btn-primary" onclick="verifyOtp()">Verify &amp; continue</button>
       <button class="btn-link demo-only" onclick="resendOtp()">Resend code</button>
       <button class="btn-link demo-only" onclick="continueDemoAccount()">Skip OTP (demo) →</button>
+      <button class="btn-outline demo-escape" onclick="enterDemoMode()">Continue in demo mode →</button>
       <button class="btn-link" onclick="backToMethod()">← Change number / email</button>
     </div>
 
