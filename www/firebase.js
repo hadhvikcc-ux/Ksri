@@ -258,8 +258,27 @@ window.KsriFirebase = (function () {
   };
   F.getUserProfile = function (uid) {
     var fs = F._fns.fs;
-    return fs.getDoc(fs.doc(F._db, 'users', uid)).then(function (snap) {
-      return snap.exists() ? snap.data() : null;
+    /* A Firestore read that never settles must not freeze sign-in
+       forever: Auth can succeed (the console proves it) while this
+       read stalls in a sandboxed webview, leaving the user stuck on
+       the sign-in screen with no error. Time out and reject instead —
+       enterAfterSignIn() already catches a failed lookup and either
+       enters the app from the saved local user or shows profile
+       setup, so a stalled lookup degrades instead of hanging. */
+    var timeoutMs = F._profileLookupTimeoutMs || 10000;
+    var done = false;
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () {
+        if (done) return; done = true;
+        reject(new Error('Profile lookup timed out'));
+      }, timeoutMs);
+      fs.getDoc(fs.doc(F._db, 'users', uid)).then(function (snap) {
+        if (done) return; done = true; clearTimeout(timer);
+        resolve(snap.exists() ? snap.data() : null);
+      }).catch(function (e) {
+        if (done) return; done = true; clearTimeout(timer);
+        reject(e);
+      });
     });
   };
   F.updateLastSeen = function () {

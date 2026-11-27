@@ -480,3 +480,41 @@ test('ensureDM: denied existence check on a new chat still creates it', async ()
   assert.equal(setCalls.length, 1);
   assert.equal(store['chats/dm_u1_u2'].lastMessage, 'Hello');
 });
+
+test('getUserProfile: a stalled Firestore read times out instead of freezing sign-in', async () => {
+  // Regression test for "sign in just sits there" with hadhvikcc@gmail.com:
+  // Firebase Auth succeeds (the console shows the sign-in) but the
+  // Firestore profile lookup after it can stall forever in a sandboxed
+  // webview, and enterAfterSignIn() awaits it with no timeout — so the
+  // user never leaves the sign-in screen and sees no error.
+  const vm = require('node:vm');
+  const fbSrc = fs.readFileSync(path.join(root, 'www', 'firebase.js'), 'utf8');
+  const ctx = { console, setTimeout, clearTimeout, Promise, Error, JSON, Math, Date, Object, Array, RegExp };
+  ctx.window = ctx;
+  ctx.CustomEvent = function (type, opts) { this.type = type; this.detail = (opts && opts.detail) || null; };
+  ctx.window.dispatchEvent = () => true;
+  vm.createContext(ctx);
+  vm.runInContext(fbSrc, ctx, { filename: 'firebase.js' });
+  const FB = ctx.KsriFirebase;
+  FB._profileLookupTimeoutMs = 30; // test speed only; default is 10000
+  FB.user = { uid: 'u1' };
+
+  // 1. getDoc that never settles -> rejects with a timeout error.
+  FB._fns = {
+    fs: {
+      doc: (db, coll, id) => ({ __path: coll + '/' + id }),
+      getDoc: () => new Promise(() => {}), // stalls forever
+      serverTimestamp: () => 'ts'
+    }
+  };
+  await assert.rejects(() => FB.getUserProfile('u1'), /timed out/);
+
+  // 2. A healthy read still returns the profile.
+  FB._fns.fs.getDoc = () => Promise.resolve({ exists: () => true, data: () => ({ uid: 'u1', displayName: 'Hadhvik' }) });
+  const p = await FB.getUserProfile('u1');
+  assert.equal(p.displayName, 'Hadhvik');
+
+  // 3. A missing profile still resolves null (first-time user -> setup).
+  FB._fns.fs.getDoc = () => Promise.resolve({ exists: () => false, data: () => null });
+  assert.equal(await FB.getUserProfile('u9'), null);
+});
