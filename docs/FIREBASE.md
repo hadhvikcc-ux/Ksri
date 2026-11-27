@@ -140,8 +140,13 @@ Note the exact wording — it tells you what to fix.
   plugin (no reCAPTCHA) — a future step, not in this build.
 - **Email is link-or-password, never a 6-digit code.** Firebase simply
   does not send email OTP codes. The app never fakes one.
-- **Email-link sign-in** opens the link in a browser, so it works best
-  in the browser / Windows build. On Android, prefer email + password.
+- **Email-link sign-in only works on the WEB (https).** In the installed
+  Android app the link opens in a browser and can never return to the
+  app, so the link button is hidden there — **on Android, use email +
+  password** (that is the primary email path on the app). On the web,
+  the link works, but open it on the **same browser/device that
+  requested it**; if the email was not saved there, the app asks you to
+  type the email and finishes sign-in with it instead of failing.
 - **Returning users go straight in.** After logout, signing in again
   (phone SMS or email + password) takes you directly to your chats —
   profile setup (name/bio) is first-time only. Your account and chats

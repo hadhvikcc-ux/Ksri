@@ -83,6 +83,7 @@ ctx.document.getElementById('demo-otp-signup');
 
 // ---- FAKE Firebase backend (same API surface as www/firebase.js) ----
 const fakeUser = { uid: 'u1', phoneNumber: '+919999999999', email: null };
+let linkEmailSaved = true; // whether the requesting email is in "localStorage"
 ctx.KsriFirebase = {
   ready: true,
   configured: true,
@@ -92,9 +93,13 @@ ctx.KsriFirebase = {
   sendPhoneCode: (phone) => { calls.push(['sendPhoneCode', phone]); ctx.KsriFirebase._phonePending = true; return Promise.resolve(true); },
   hasPendingPhoneCode: () => ctx.KsriFirebase._phonePending,
   confirmPhoneCode: (code) => { calls.push(['confirmPhoneCode', code]); ctx.KsriFirebase.user = fakeUser; return Promise.resolve(fakeUser); },
-  sendEmailLink: (email) => { calls.push(['sendEmailLink', email]); return Promise.resolve(); },
+  sendEmailLink: (email) => { calls.push(['sendEmailLink', email]); linkEmailSaved = true; return Promise.resolve(); },
   isEmailLink: () => false,
-  completeEmailLink: () => Promise.resolve(fakeUser),
+  completeEmailLink: () => {
+    if (!linkEmailSaved) { const e = new Error('need email'); e.code = 'ksri-need-email'; return Promise.reject(e); }
+    ctx.KsriFirebase.user = fakeUser; return Promise.resolve(fakeUser);
+  },
+  completeEmailLinkWith: (email) => { calls.push(['completeEmailLinkWith', email]); linkEmailSaved = true; ctx.KsriFirebase.user = { uid: 'u1', email }; return Promise.resolve(ctx.KsriFirebase.user); },
   createEmailAccount: (e, p) => { ctx.KsriFirebase.user = { uid: e === 'new@ksri.app' ? 'u9' : 'u1', email: e }; return Promise.resolve(ctx.KsriFirebase.user); },
   signInEmailPassword: (e, p) => {
     // Only the returning user can sign in; anyone else is "no account".
@@ -238,6 +243,48 @@ run('www/app.js');
   await sleep(10);
   check('new user upserted profile', calls.some((c) => c[0] === 'upsertUserProfile' && c[1] === 'New User'));
   check('new user enters app after setup', !els['app-screen']._cls.has('hidden'));
+
+  // ---- Email LINK fixes: file:// can never complete a link ----
+  // The harness runs from file:// (like the installed app): the link
+  // button must be hidden and the note shown for email in real mode.
+  ctx.logout();
+  ctx.setMethod('email');
+  await sleep(10);
+  check('file:// link button hidden', els['email-link-btn']._cls.has('hidden'));
+  check('file:// link note shown', !els['email-link-note']._cls.has('hidden'));
+  // Sending a link from file:// is refused — no Firebase call at all.
+  const linkCallsBefore = calls.filter((c) => c[0] === 'sendEmailLink').length;
+  ctx.document.getElementById('id-input').value = 'link@ksri.app';
+  ctx.sendEmailLinkFlow();
+  await sleep(10);
+  check('file:// sendEmailLinkFlow blocked', calls.filter((c) => c[0] === 'sendEmailLink').length === linkCallsBefore);
+  check('file:// link error shown', !els['id-error']._cls.has('hidden'));
+  // On https the same flow sends the link.
+  ctx.location.href = 'https://ksri.example/';
+  ctx.sendEmailLinkFlow();
+  await sleep(10);
+  check('https sendEmailLinkFlow sends link', calls.some((c) => c[0] === 'sendEmailLink' && c[1] === 'link@ksri.app'));
+  ctx.location.href = 'file://' + path.join(__dirname, '..', 'www', 'index.html');
+  // Link clicked with NO saved email -> ksri-need-email -> prompt modal.
+  linkEmailSaved = false;
+  let needEmail = null;
+  try { await ctx.KsriFirebase.completeEmailLink(); } catch (e) { needEmail = e; }
+  check('complete without saved email -> ksri-need-email', needEmail && needEmail.code === 'ksri-need-email');
+  ctx.promptForEmailLinkEmail();
+  check('prompt modal asks for the email', !els['modal']._cls.has('hidden') && (els['modal-card'].innerHTML || '').indexOf('email-link-email') !== -1);
+  ctx.document.getElementById('email-link-email').value = 'returning@ksri.app';
+  ctx.submitEmailLinkEmail();
+  await sleep(10);
+  check('submit with typed email completes link', calls.some((c) => c[0] === 'completeEmailLinkWith' && c[1] === 'returning@ksri.app'));
+  check('link user with existing profile enters app', !els['app-screen']._cls.has('hidden'));
+  // Link clicked WITH saved email -> completes directly, straight in.
+  ctx.logout();
+  linkEmailSaved = true;
+  await ctx.KsriFirebase.completeEmailLink();
+  ctx.enterAfterSignIn();
+  await sleep(10);
+  check('saved-email link completes', ctx.KsriFirebase.user && ctx.KsriFirebase.user.uid === 'u1');
+  check('saved-email link user enters app', !els['app-screen']._cls.has('hidden'));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

@@ -382,6 +382,52 @@ test('real auth fixes: normalizePhone, real resend, returning user skips profile
   assert.match(appJs, /upsertUserProfile\(\{/);
 });
 
+test('email link: hidden on file://, rejected by Firebase, asks for email when not saved', () => {
+  const fb = fs.readFileSync(path.join(root, 'www', 'firebase.js'), 'utf8');
+  // BUG — "link clicked, not registering": a Firebase email link can
+  // never complete back into the installed file:// app, and completing
+  // a link whose email was not saved failed outright. Both fixed.
+  // 1. The installed app (file://) must not offer the link button.
+  assert.match(appJs, /function isFileApp\(\)/);
+  assert.match(appJs, /window\.location\.protocol === 'file:'/, 'isFileApp detects file://');
+  const refreshFn = appJs.slice(appJs.indexOf('function refreshAuthModeUI()'), appJs.indexOf('function openModeInfo()'));
+  assert.match(refreshFn, /email-link-btn/, 'auth UI toggles the link button');
+  assert.match(refreshFn, /email-link-note/, 'auth UI toggles the file-app note');
+  assert.match(refreshFn, /isFileApp\(\)/, 'link button hidden on file://');
+  assert.match(indexHtml, /id="email-link-btn"/);
+  assert.match(indexHtml, /id="email-link-note"/);
+  assert.match(indexHtml, /don't work inside the installed app/);
+  // 2. sendEmailLinkFlow guards file:// before calling Firebase…
+  const linkFn = appJs.slice(appJs.indexOf('function sendEmailLinkFlow()'), appJs.indexOf('function promptForEmailLinkEmail()'));
+  assert.match(linkFn, /isFileApp\(\)/);
+  assert.match(linkFn, /use your password below instead/, 'file:// link flow tells the user to use a password');
+  // …and firebase.js refuses a file:// continue URL outright.
+  assert.match(fb, /window\.location\.protocol.*'file:'/);
+  assert.match(fb, /Email links need a web address/);
+  // 3. Completing a link without a saved email asks for the email
+  // instead of failing outright.
+  assert.match(fb, /function \(email\)/, 'completeEmailLinkWith takes an explicit email');
+  assert.match(fb, /completeEmailLinkWith = function \(email\)/);
+  assert.match(fb, /ksri-need-email/);
+  assert.match(appJs, /function promptForEmailLinkEmail\(\)/);
+  assert.match(appJs, /function submitEmailLinkEmail\(\)/);
+  assert.match(appJs, /completeEmailLinkWith\(v\)/);
+  const bootFn = appJs.slice(appJs.indexOf("document.addEventListener('DOMContentLoaded'"));
+  assert.match(bootFn, /e\.code === 'ksri-need-email'/, 'boot asks for the email on ksri-need-email');
+  assert.match(bootFn, /promptForEmailLinkEmail\(\)/);
+  // 4. A completed link still finishes via afterFirebaseAuth (returning
+  // users go straight into chats, not to profile setup).
+  assert.match(bootFn, /completeEmailLink\(\)\.then\(function \(\) \{\s*afterFirebaseAuth\(\);/);
+  // 5. Email + password (the Android email path) is untouched.
+  assert.match(appJs, /function signInEmailPasswordFlow\(\)/);
+  assert.match(fb, /signInWithEmailAndPassword/);
+  // Docs say so plainly.
+  const fbDocs = fs.readFileSync(path.join(root, 'docs', 'FIREBASE.md'), 'utf8');
+  assert.match(fbDocs, /Email-link sign-in only works on the WEB/);
+  assert.match(fbDocs, /on Android, use email \+\s*password/);
+  assert.match(fbDocs, /same browser\/device that\n  requested it/);
+});
+
 test('CSS has dark mode + green brand', () => {
   assert.ok(css.includes('body.dark'), 'dark mode styles');
   assert.ok(css.includes('#25D366'), 'WhatsApp green');

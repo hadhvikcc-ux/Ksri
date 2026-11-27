@@ -35,7 +35,8 @@
         <label for="email-password">Password (email sign-in)</label>
         <input id="email-password" type="password" placeholder="At least 6 characters" autocomplete="off">
         <p class="tiny muted">Email has no SMS code — sign in with a link sent to your inbox, or with a password.</p>
-        <button class="btn-primary" onclick="sendEmailLinkFlow()">✉️ Email me a sign-in link</button>
+        <button class="btn-primary" id="email-link-btn" onclick="sendEmailLinkFlow()">✉️ Email me a sign-in link</button>
+        <p id="email-link-note" class="tiny muted hidden">Sign-in links don't work inside the installed app — use your password below.</p>
         <button class="btn-outline" onclick="signInEmailPasswordFlow()">Sign in / Create account with password</button>
       </div>
       <div class="demo-otp demo-otp-big demo-only">Demo OTP for this build: <b class="demo-otp-code" id="demo-otp-signup">123456</b><br><span class="tiny">Use this code — no SMS is sent. It is the same code every time.</span></div>

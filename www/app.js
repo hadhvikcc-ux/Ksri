@@ -2276,6 +2276,15 @@ function updateModeBadge() {
   for (var j = 0; j < realEls.length; j++) realEls[j].classList.toggle('hidden', !firebaseReady);
   refreshAuthModeUI();
 }
+function isFileApp() {
+  /* The installed Android/Windows app loads from a file:// URL; the web
+     preview and browsers use https:. Email sign-in LINKS cannot complete
+     back into a file:// page, so the link button is hidden there and
+     sendEmailLink() refuses. Use location.protocol when present, fall
+     back to the href (some test stubs only set href). */
+  if (window.location.protocol) return window.location.protocol === 'file:';
+  return (window.location.href || '').indexOf('file:') === 0;
+}
 function refreshAuthModeUI() {
   /* Email in real mode uses a sign-in link / password, not an OTP code —
      so the Send OTP button is replaced by the email-auth row. */
@@ -2283,6 +2292,16 @@ function refreshAuthModeUI() {
   var sendBtn = $('send-otp-btn');
   if (emailRow) emailRow.classList.toggle('hidden', !(firebaseReady && pendingMethod === 'email'));
   if (sendBtn) sendBtn.classList.toggle('hidden', firebaseReady && pendingMethod === 'email');
+  /* Email LINKS do not work inside the installed (file://) app: the
+     link opens in a browser and never returns, so sign-in never
+     completes. Hide the link button there and show the note instead;
+     the password button stays fully working. On https the link button
+     stays available. */
+  var linkBtn = $('email-link-btn');
+  var linkNote = $('email-link-note');
+  var linkBlocked = firebaseReady && pendingMethod === 'email' && isFileApp();
+  if (linkBtn) linkBtn.classList.toggle('hidden', linkBlocked);
+  if (linkNote) linkNote.classList.toggle('hidden', !linkBlocked);
 }
 function openModeInfo() {
   var html = firebaseReady
@@ -2306,11 +2325,50 @@ function sendEmailLinkFlow() {
     if (err) { err.textContent = 'Enter a valid email address first.'; err.classList.remove('hidden'); }
     return;
   }
+  /* Defence in depth (firebase.js also refuses): never send a link
+     from the installed file:// app — it can never complete there. */
+  if (isFileApp()) {
+    if (err) { err.textContent = 'Sign-in links don\'t work inside the installed app — use your password below instead.'; err.classList.remove('hidden'); }
+    return;
+  }
   if (err) err.classList.add('hidden');
   pendingMethod = 'email'; pendingValue = v;
   window.KsriFirebase.sendEmailLink(v).then(function () {
     openModal('<h3>Check your inbox ✉️</h3><p>We sent a sign-in link to <b>' + esc(v) + '</b>. Tap the link to finish signing in, then set up your profile.</p><p class="muted small">On Android the link opens in a browser — if it does not bring you back into the app, use the password option instead. Firebase does not send 6-digit codes by email.</p><button class="btn-outline" style="width:100%" onclick="closeModal()">OK</button>');
     toast('Sign-in link sent');
+  }).catch(function (e) {
+    if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
+  });
+}
+/* The sign-in link was opened but the email was not saved on this
+   device (e.g. the link was requested on another browser/phone). Ask
+   the user to type the email they used, then complete the link with it
+   instead of failing outright — that was the "link clicked, not
+   registering" dead end. */
+function promptForEmailLinkEmail() {
+  var html = '<h3>Almost there ✉️</h3>' +
+    '<p>That sign-in link is valid, but this device doesn\'t know which email it was sent to. Type the email address you used:</p>' +
+    '<label for="email-link-email">Email address</label>' +
+    '<input id="email-link-email" type="email" placeholder="you@example.com" autocomplete="off">' +
+    '<p id="email-link-error" class="error hidden"></p>' +
+    '<button class="btn-primary" style="width:100%" onclick="submitEmailLinkEmail()">Finish signing in →</button>' +
+    '<button class="btn-outline" style="width:100%" onclick="closeModal()">Cancel</button>';
+  openModal(html);
+  var inp = $('email-link-email');
+  if (inp) inp.focus();
+}
+function submitEmailLinkEmail() {
+  var v = ($('email-link-email') && $('email-link-email').value || '').trim().toLowerCase();
+  var err = $('email-link-error');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+    if (err) { err.textContent = 'Enter the email address the link was sent to.'; err.classList.remove('hidden'); }
+    return;
+  }
+  if (err) err.classList.add('hidden');
+  pendingMethod = 'email'; pendingValue = v;
+  window.KsriFirebase.completeEmailLinkWith(v).then(function () {
+    closeModal();
+    afterFirebaseAuth();
   }).catch(function (e) {
     if (err) { err.textContent = window.KsriFirebase.friendlyAuthError(e); err.classList.remove('hidden'); }
   });
@@ -2559,6 +2617,16 @@ document.addEventListener('DOMContentLoaded', function () {
         window.KsriFirebase.completeEmailLink().then(function () {
           afterFirebaseAuth();
         }).catch(function (e) {
+          if (e && e.code === 'ksri-need-email') {
+            /* Link is valid but the email was not saved on this device:
+               ask the user to type it instead of failing outright. */
+            $('auth-screen').classList.remove('hidden');
+            $('app-screen').classList.add('hidden');
+            showStep('step-method');
+            updateModeBadge();
+            promptForEmailLinkEmail();
+            return;
+          }
           toast(window.KsriFirebase.friendlyAuthError(e));
           realMode = false;
           $('auth-screen').classList.remove('hidden');

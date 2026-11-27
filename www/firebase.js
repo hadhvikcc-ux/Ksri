@@ -20,8 +20,15 @@
  * - Firebase does NOT send 6-digit codes by email. Email sign-in is by
  *   sign-in LINK (tap the link in your inbox) or by email + password.
  *   There is deliberately no fake "email OTP" anywhere in this file.
- * - Email-link sign-in opens the link in a browser, so it works best in
- *   the browser / Windows build. On Android, use email + password.
+ * - Email-link sign-in only works on the WEB (https). The installed
+ *   Android app loads from a file:// URL, and a Firebase email link
+ *   cannot complete back into a file:// page — the link opens in a
+ *   browser and sign-in never finishes. sendEmailLink() therefore
+ *   refuses file:// outright; on Android use email + password instead.
+ *   On the web the link must also be opened on the same browser/device
+ *   that requested it (the email is saved in localStorage); if it was
+ *   not saved, completeEmailLink() fails with code 'ksri-need-email'
+ *   so the app can ask the user to type the email and retry.
  *
  * Firestore model:
  *   users/{uid}                  { uid, displayName, bio, avatarColor,
@@ -126,7 +133,8 @@ window.KsriFirebase = (function () {
       'auth/email-already-in-use': 'An account with that email already exists — sign in with your password instead.',
       'auth/weak-password': 'Password must be at least 6 characters.',
       'auth/invalid-verification-id': 'Verification expired — ask for a new SMS code.',
-      'auth/network-request-failed': 'No internet connection. Real sign-in needs internet; demo mode works offline.'
+      'auth/network-request-failed': 'No internet connection. Real sign-in needs internet; demo mode works offline.',
+      'ksri-need-email': 'We need the email address you used for the link — it was not saved on this device. Enter it and try again.'
     };
     return map[code] || ((err && err.message) || 'Sign-in failed. Please try again.');
   }
@@ -166,10 +174,17 @@ window.KsriFirebase = (function () {
   };
 
   /* Email sign-in LINK (Firebase has no email OTP codes — this is the
-     real email path). The link opens in a browser; handleCodeInApp lets
-     the app complete sign-in when it returns. */
+     real email path). Only works on the WEB (https): the installed app
+     loads from file:// and a Firebase email link can never complete
+     back into a file:// page — the link opens in a browser and sign-in
+     never finishes. Refuse file:// outright instead of sending a link
+     that can never work. On Android use email + password instead. */
   F.sendEmailLink = function (email) {
     var auth = F._fns.auth;
+    if ((window.location.protocol || '') === 'file:' ||
+        (window.location.href || '').indexOf('file://') === 0) {
+      return Promise.reject(new Error('Email links need a web address — use a password on the installed app instead.'));
+    }
     try { localStorage.setItem('ksri_email_for_signin', email); } catch (e) { /* ignore */ }
     return auth.sendSignInLinkToEmail(F._auth, email, {
       url: window.location.href.split('#')[0],
@@ -180,15 +195,28 @@ window.KsriFirebase = (function () {
     if (!F._fns) return false;
     try { return F._fns.auth.isSignInWithEmailLink(F._auth, window.location.href); } catch (e) { return false; }
   };
-  F.completeEmailLink = function () {
+  /* Complete a sign-in link with an EXPLICIT email (used when the email
+     was not saved on this device — e.g. the link was clicked on a
+     different browser than the one that requested it). */
+  F.completeEmailLinkWith = function (email) {
     var auth = F._fns.auth;
-    var email = null;
-    try { email = localStorage.getItem('ksri_email_for_signin'); } catch (e) { /* ignore */ }
-    if (!email) return Promise.reject(new Error('We need the email address you used — it was not saved on this device. Enter it again and request a new link.'));
     return auth.signInWithEmailLink(F._auth, email, window.location.href).then(function (cred) {
       F.user = cred.user;
+      try { localStorage.setItem('ksri_email_for_signin', email); } catch (e) { /* ignore */ }
       return cred.user;
     });
+  };
+  F.completeEmailLink = function () {
+    var email = null;
+    try { email = localStorage.getItem('ksri_email_for_signin'); } catch (e) { /* ignore */ }
+    if (!email) {
+      /* Do NOT fail outright: the caller (boot) asks the user to type
+         the email they used and retries via completeEmailLinkWith. */
+      var err = new Error('We need the email address you used — it was not saved on this device. Enter it again and request a new link.');
+      err.code = 'ksri-need-email';
+      return Promise.reject(err);
+    }
+    return F.completeEmailLinkWith(email);
   };
 
   /* Email + password (the Android-friendly email path). */
